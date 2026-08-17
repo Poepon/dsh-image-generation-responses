@@ -20,8 +20,9 @@ import { fileURLToPath } from "node:url";
 
 const CLIENT_PATH = fileURLToPath(new URL("../lib/client.js", import.meta.url));
 
-/** A stand-in for the ImageGallery atom; identity is enough to assert dispatch. */
+/** Stand-ins for the attachment atoms; identity is enough to assert dispatch. */
 const ImageGallery = function ImageGallery() {};
+const MessageImage = function MessageImage() {};
 
 /**
  * Minimal React seed. `createElement` backs every view assertion; `useState`
@@ -136,7 +137,7 @@ function materialize() {
 
   const require = (spec) => {
     if (spec === "react") return React;
-    if (spec === "@deepseek-ai/dsh-client-ui-attachment") return { ImageGallery };
+    if (spec === "@deepseek-ai/dsh-client-ui-attachment") return { ImageGallery, MessageImage };
     throw new Error(`unexpected require("${spec}") — not a platform seed word`);
   };
   return handoffs[0].factory(require);
@@ -422,9 +423,14 @@ test("the sidebar toggle reflects and drives the shared panel state", () => {
   rail.unmount();
 });
 
-test("the overlay panel stays empty while closed and lists the current session's images when open", () => {
+test("the overlay panel stays empty while closed and stacks the current session's images when open", () => {
   const store = client.createPanelStore();
-  const snapshot = { nodes: [{ kind: "user", seq: 1, content: [{ type: "image", attachment: ref("a1") }] }] };
+  const snapshot = {
+    nodes: [
+      { kind: "user", seq: 1, content: [{ type: "image", attachment: ref("a1") }] },
+      { kind: "assistant", seq: 2, blocks: [{ kind: "image", attachment: ref("a2") }] },
+    ],
+  };
   let listener;
   const session = {
     getSnapshot: () => snapshot,
@@ -446,12 +452,20 @@ test("the overlay panel stays empty while closed and lists the current session's
   const open = render(Panel, props);
   assert.equal(open.tree.props.role, "dialog");
   const head = open.tree.children.find((child) => child.props.className === "dsh-igr-panel-head");
-  assert.equal(head.children.find((c) => c.props.className === "dsh-igr-panel-count").children, "1");
+  assert.equal(head.children.find((c) => c.props.className === "dsh-igr-panel-count").children, "2");
 
   const body = open.tree.children.find((child) => child.props.className === "dsh-igr-panel-body");
-  assert.equal(body.children.type, ImageGallery);
-  assert.deepEqual(body.children.props.images.map((i) => i.attachment.attachmentId), ["a1"]);
-  assert.equal(body.children.props.load, load, "the panel reuses the session-authorized loader");
+  const stack = body.children;
+  assert.equal(stack.props.className, "dsh-igr-stack", "images stack vertically, one per row");
+
+  // ImageGallery would collapse a multi-image group into 64px tiles, so the
+  // vertical dock drives MessageImage directly at `single` size instead.
+  assert.deepEqual(stack.children.map((child) => child.type), [MessageImage, MessageImage]);
+  assert.deepEqual(stack.children.map((child) => child.props.variant), ["single", "single"]);
+  assert.deepEqual(stack.children.map((child) => child.props.attachment.attachmentId), ["a2", "a1"]);
+  assert.deepEqual(stack.children.map((child) => child.props.key), ["a2", "a1"]);
+  assert.equal(stack.children[0].props.load, load, "the panel reuses the session-authorized loader");
+  assert.equal(stack.children[1].props.load, load, "every row shares one loader identity");
 
   assert.equal(typeof listener, "function", "the panel subscribes to the live session face");
   head.children.find((c) => c.props.className === "dsh-igr-panel-close").props.onClick();
@@ -459,6 +473,30 @@ test("the overlay panel stays empty while closed and lists the current session's
 
   open.unmount();
   assert.equal(listener, undefined, "unmounting releases the session subscription");
+});
+
+test("the open dock pins itself to the measured sidebar width", () => {
+  const store = client.createPanelStore();
+  store.set(true);
+  const Panel = client.makeGalleryPanel(store, () => () => Promise.resolve(""), () => ({ binding: () => undefined }));
+  const props = { useSessions: (select) => select({ current: undefined }) };
+
+  // No document in this realm: the dock must still render, flush against the
+  // frame's left edge rather than throwing on the missing measurement target.
+  const bare = render(Panel, props);
+  assert.equal(bare.tree.props.style.left, "0px");
+  bare.unmount();
+
+  const column = { getBoundingClientRect: () => ({ width: 248 }) };
+  const layer = { parentElement: { firstElementChild: column } };
+  global.document = { querySelector: (sel) => (sel === "[data-shell-overlay]" ? layer : null) };
+  try {
+    const docked = render(Panel, props);
+    assert.equal(docked.tree.props.style.left, "248px", "the dock sits at the conversation column's left edge");
+    docked.unmount();
+  } finally {
+    delete global.document;
+  }
 });
 
 test("the overlay panel degrades when no session is current or the binding is gone", () => {

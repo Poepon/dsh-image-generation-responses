@@ -6,7 +6,7 @@ All notable changes to this project are documented here. This project follows Se
 
 ### Added
 
-- Session image gallery in the web client: a `sidebar.footer.action` toggle and a `shell.overlay` panel listing the current session's durable images, newest first and deduplicated by attachment id.
+- Session image gallery in the web client: a `sidebar.footer.action` toggle and a `shell.overlay` vertical dock pinned to the conversation column's left edge, listing the current session's durable images one per row, newest first and deduplicated by attachment id.
 
 ## [0.1.0] - 2025-08-17
 

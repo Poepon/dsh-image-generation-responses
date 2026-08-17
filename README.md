@@ -90,7 +90,9 @@ The Client half registers a keyed `generate_image` view in `tool.call.toolview`.
 The Client half also contributes a session image gallery:
 
 - An additive toggle in `sidebar.footer.action`, beside Settings. It follows the sidebar's wide and rail states.
-- A panel in `shell.overlay` listing every durable image in the current session, newest first and deduplicated by attachment id.
+- A vertical dock in `shell.overlay`, pinned to the conversation column's left edge, listing every durable image in the current session newest first and deduplicated by attachment id.
+
+Images stack one per row at full `single` size rather than as 64px tiles: `ImageGallery` switches to tiles past a single image, so the dock drives `MessageImage` directly. The dock spans the frame's full height and measures the sidebar column so it stays flush against the conversation column across collapse and drag.
 
 The panel collects images from user uploads, assistant image blocks, and tool results (including the presentation-meta fallback used when content blocks were pruned), so it is not limited to images this plugin generated. Both seats are additive list entries addressed by namespaced ids, so no shipped sidebar or overlay UI is replaced. The panel renders nothing while closed, and it subscribes to the current session's conversation snapshot only while mounted.
 

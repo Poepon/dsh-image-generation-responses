@@ -90,7 +90,9 @@ Client half 在 `tool.call.toolview` 中注册 `generate_image` 专用视图，�
 Client half 还提供会话图片画廊：
 
 - 在 `sidebar.footer.action` 中新增一个位于 Settings 旁的开关，并适配侧边栏展开与收起（rail）两种状态。
-- 在 `shell.overlay` 中提供面板，列出当前会话的全部持久化图片，按最新优先排序并按 attachment id 去重。
+- 在 `shell.overlay` 中提供垂直侧栏，贴合对话列左边缘，列出当前会话的全部持久化图片，按最新优先排序并按 attachment id 去重。
+
+图片按每行一张的 `single` 完整尺寸垂直堆叠，而非 64px 方块：`ImageGallery` 在多于一张时会切换为方块平铺，因此侧栏直接使用 `MessageImage`。侧栏占满 frame 高度，并测量侧边栏列宽，使其在侧边栏收起与拖动改变宽度时始终贴合对话列。
 
 面板会收集用户上传、assistant 图片块以及工具结果中的图片（包括内容块被裁剪时使用的 presentation meta 回退），因此不局限于本插件生成的图片。两个位置都是使用命名空间 id 的可叠加 list 条目，不会替换任何随 DSH 发布的侧边栏或浮层 UI。面板关闭时不渲染任何内容，且仅在挂载期间订阅当前会话的对话快照。
 
