@@ -1,0 +1,14 @@
+node_modules/
+.npm-cache/
+coverage/
+.nyc_output/
+*.tgz
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+.credentials.yaml
+cordis.patch.yml
+attachments/
+generated/

@@ -1,0 +1,75 @@
+{
+  "name": "dsh-image-generation-responses",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness Cordis plugin for Responses API image_generation: durable attachments and inline conversation rendering.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./protocol": "./lib/protocol.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-tool",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
+    "check:syntax": "node --check lib/index.js && node --check lib/protocol.js && node --check lib/client.js",
+    "check:release": "node scripts/release-check.mjs",
+    "check": "npm run check:syntax && npm test && npm run check:release",
+    "prepublishOnly": "npm run check"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Poepon/dsh-image-generation-responses.git"
+  },
+  "homepage": "https://github.com/Poepon/dsh-image-generation-responses#readme",
+  "bugs": {
+    "url": "https://github.com/Poepon/dsh-image-generation-responses/issues"
+  },
+  "author": "Poepon",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.3.0"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-attachment": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-client-ui-attachment": "^0.1.0-rc.6",
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-ui-attachment": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "cordis",
+    "dsh",
+    "plugin",
+    "openai",
+    "responses-api",
+    "image-generation",
+    "gpt-image-2"
+  ],
+  "license": "MIT"
+}
