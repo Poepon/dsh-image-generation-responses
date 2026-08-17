@@ -23,14 +23,97 @@ const CLIENT_PATH = fileURLToPath(new URL("../lib/client.js", import.meta.url));
 /** A stand-in for the ImageGallery atom; identity is enough to assert dispatch. */
 const ImageGallery = function ImageGallery() {};
 
-/** Minimal React seed: only `createElement` is used by the bundle. */
+/**
+ * Minimal React seed. `createElement` backs every view assertion; `useState`
+ * and `useEffect` are a tiny single-component renderer used only by the
+ * sidebar/overlay tests, which need real subscribe/unsubscribe behavior.
+ */
 const React = {
   createElement: (type, props, ...children) => ({
     type,
     props: props ?? {},
     children: children.length === 1 ? children[0] : children,
   }),
+  useState: (init) => {
+    const cell = React.__hooks[React.__cursor++] ?? { value: typeof init === "function" ? init() : init };
+    React.__hooks[React.__cursor - 1] = cell;
+    const set = (next) => {
+      const value = typeof next === "function" ? next(cell.value) : next;
+      if (Object.is(value, cell.value)) return;
+      cell.value = value;
+      React.__render();
+    };
+    return [cell.value, set];
+  },
+  useEffect: (fn, deps) => {
+    const index = React.__cursor++;
+    const cell = React.__hooks[index] ?? { deps: undefined, cleanup: undefined, first: true };
+    React.__hooks[index] = cell;
+    const changed = cell.first
+      || deps === undefined
+      || cell.deps === undefined
+      || deps.length !== cell.deps.length
+      || deps.some((dep, i) => !Object.is(dep, cell.deps[i]));
+    if (changed) {
+      React.__pending.push(() => {
+        if (typeof cell.cleanup === "function") cell.cleanup();
+        cell.cleanup = fn();
+      });
+      cell.deps = deps;
+      cell.first = false;
+    }
+  },
+  __hooks: [],
+  __cursor: 0,
+  __pending: [],
+  __render: () => {},
 };
+
+/**
+ * Render one hook-using component repeatedly until its state settles, the way
+ * React would across commits.
+ * @param Component - the component under test.
+ * @param props - props passed on every pass.
+ * @returns a handle exposing the latest tree and an unmount that runs cleanups.
+ */
+function render(Component, props) {
+  const hooks = [];
+  let tree = null;
+  let dirty = true;
+  let guard = 0;
+  const pass = () => {
+    React.__hooks = hooks;
+    React.__cursor = 0;
+    React.__pending = [];
+    React.__render = () => { dirty = true; };
+    tree = Component(props);
+    const effects = React.__pending;
+    React.__pending = [];
+    effects.forEach((run) => run());
+  };
+  while (dirty) {
+    if ((guard += 1) > 20) throw new Error("render did not settle");
+    dirty = false;
+    pass();
+  }
+  return {
+    get tree() { return tree; },
+    rerender: () => {
+      dirty = true;
+      while (dirty) {
+        if ((guard += 1) > 40) throw new Error("rerender did not settle");
+        dirty = false;
+        pass();
+      }
+      return tree;
+    },
+    unmount: () => {
+      hooks.forEach((cell) => {
+        if (cell !== undefined && typeof cell.cleanup === "function") cell.cleanup();
+      });
+    },
+  };
+}
 
 /**
  * Execute the built bundle the way the shell does and materialize its factory.
@@ -95,7 +178,7 @@ function settled(overrides = {}) {
 
 test("the bundle exports the client plugin contract", () => {
   assert.equal(typeof client.apply, "function");
-  assert.deepEqual(client.inject, ["slots", "conversation"]);
+  assert.deepEqual(client.inject, ["slots", "conversation", "sessions"]);
 });
 
 test("apply claims the generate_image key of tool.call.toolview and unwinds with the fiber", () => {
@@ -124,11 +207,20 @@ test("apply claims the generate_image key of tool.call.toolview and unwinds with
 
   client.apply(ctx);
 
-  assert.deepEqual(injections, ["tool.call.toolview"]);
-  assert.equal(registrations.length, 1);
+  assert.deepEqual(injections, ["tool.call.toolview", "sidebar.footer.action", "shell.overlay"]);
+  assert.equal(registrations.length, 3);
   assert.equal(registrations[0].options.name, "tool.call.toolview");
   assert.equal(registrations[0].options.key, "generate_image");
   assert.equal(typeof registrations[0].component, "function");
+
+  // The gallery seats are additive list entries addressed by a namespaced id,
+  // so no shipped sidebar or overlay occupant is replaced.
+  assert.equal(registrations[1].options.name, "sidebar.footer.action");
+  assert.equal(registrations[1].options.id, "dsh-image-generation-responses/gallery-toggle");
+  assert.equal(registrations[1].options.key, undefined);
+  assert.equal(registrations[2].options.name, "shell.overlay");
+  assert.equal(registrations[2].options.id, "dsh-image-generation-responses/gallery-panel");
+  assert.equal(registrations[2].options.key, undefined);
 
   // Every side effect is reversible through the fiber's disposers.
   assert.equal(effects.length, 1);
@@ -151,8 +243,8 @@ test("the session image loader is stable per session and routes through conversa
     effect: (fn) => fn(),
     slots: {
       inject: (_name, body) => body(),
-      register: (_options, component) => {
-        captured = component;
+      register: (options, component) => {
+        if (options.key === "generate_image") captured = component;
         return () => {};
       },
     },
@@ -243,3 +335,146 @@ test("malformed image references and arguments never reach the gallery", () => {
   assert.deepEqual(client.selectImages(bad), []);
   assert.equal(client.readPrompt(settled({ call: { name: "generate_image", argsRaw: "{not json" } })), undefined);
 });
+
+//#region session gallery
+
+/** Build a durable image reference with a distinct id. */
+function ref(id) {
+  return { attachmentId: id, mediaType: "image/png", bytes: 16, width: 8, height: 8, name: `${id}.png` };
+}
+
+test("the session gallery collects images newest first across every node shape", () => {
+  const snapshot = {
+    nodes: [
+      { kind: "user", seq: 1, content: [{ type: "image", attachment: ref("up_1") }, { type: "text", text: "hi" }] },
+      { kind: "assistant", seq: 2, blocks: [{ kind: "text", text: "ok" }, { kind: "image", attachment: ref("as_1") }] },
+      settled({ seq: 3, content: [{ type: "image", attachment: ref("gen_1") }], meta: { attachment: ref("gen_1") } }),
+      { kind: "tool-result", seq: 4, content: [{ type: "text", text: "pruned" }], meta: { attachment: ref("gen_2") } },
+    ],
+  };
+
+  assert.deepEqual(
+    client.collectSessionImages(snapshot).map((item) => item.attachment.attachmentId),
+    ["gen_2", "gen_1", "as_1", "up_1"],
+    "newest node first, and the meta fallback still contributes",
+  );
+});
+
+test("the session gallery deduplicates by attachment id and tolerates unknown nodes", () => {
+  const snapshot = {
+    nodes: [
+      { kind: "user", seq: 1, content: [{ type: "image", attachment: ref("dup") }] },
+      { kind: "future-kind", seq: 2, surface: "unknown" },
+      null,
+      { kind: "assistant", seq: 3, blocks: [{ kind: "image", attachment: ref("dup") }] },
+      { kind: "assistant", seq: 4, blocks: [{ kind: "image", attachment: { attachmentId: "bad", width: 0, height: 1, mediaType: "image/png" } }] },
+    ],
+  };
+
+  assert.deepEqual(client.collectSessionImages(snapshot).map((i) => i.attachment.attachmentId), ["dup"]);
+  assert.deepEqual(client.collectSessionImages({}), [], "a snapshot without nodes yields nothing");
+  assert.deepEqual(client.collectSessionImages(null), []);
+});
+
+test("sameImages keeps the projection identity stable across snapshot flushes", () => {
+  const a = [{ attachment: ref("x") }, { attachment: ref("y") }];
+  assert.equal(client.sameImages(a, [{ attachment: ref("x") }, { attachment: ref("y") }]), true);
+  assert.equal(client.sameImages(a, [{ attachment: ref("y") }, { attachment: ref("x") }]), false);
+  assert.equal(client.sameImages(a, [{ attachment: ref("x") }]), false);
+});
+
+test("the panel store notifies subscribers only on real transitions and unsubscribes", () => {
+  const store = client.createPanelStore();
+  let notified = 0;
+  const stop = store.subscribe(() => { notified += 1; });
+
+  assert.equal(store.get(), false, "the panel starts closed");
+  store.set(false);
+  assert.equal(notified, 0, "an idempotent write notifies nobody");
+  store.set(true);
+  assert.equal(store.get(), true);
+  assert.equal(notified, 1);
+
+  stop();
+  store.set(false);
+  assert.equal(notified, 1, "a removed listener stops hearing changes");
+});
+
+test("the sidebar toggle reflects and drives the shared panel state", () => {
+  const store = client.createPanelStore();
+  const Toggle = client.makeGalleryButton(store);
+
+  const wide = render(Toggle, { wide: true });
+  assert.equal(wide.tree.type, "button");
+  assert.equal(wide.tree.props["aria-pressed"], false);
+  assert.equal(wide.tree.props["data-rail"], undefined);
+  assert.equal(wide.tree.children.length, 2, "the wide column shows icon + label");
+
+  wide.tree.props.onClick();
+  assert.equal(store.get(), true, "clicking opens the panel");
+  assert.equal(wide.rerender().props["aria-pressed"], true);
+  wide.unmount();
+
+  const rail = render(Toggle, { wide: false });
+  assert.equal(rail.tree.props["data-rail"], true);
+  assert.equal(rail.tree.children.length, 1, "the rail column shows the icon only");
+  assert.equal(rail.tree.props["aria-pressed"], true, "both seats read one shared store");
+  rail.unmount();
+});
+
+test("the overlay panel stays empty while closed and lists the current session's images when open", () => {
+  const store = client.createPanelStore();
+  const snapshot = { nodes: [{ kind: "user", seq: 1, content: [{ type: "image", attachment: ref("a1") }] }] };
+  let listener;
+  const session = {
+    getSnapshot: () => snapshot,
+    subscribe: (fn) => {
+      listener = fn;
+      return () => { listener = undefined; };
+    },
+  };
+  const sessions = { binding: (id) => (id === "s1" ? { sessionId: id, session } : undefined) };
+  const load = () => Promise.resolve("blob:x");
+  const Panel = client.makeGalleryPanel(store, () => load, () => sessions);
+  const props = { useSessions: (select) => select({ current: "s1" }) };
+
+  const closed = render(Panel, props);
+  assert.equal(closed.tree, null, "a closed panel occupies no space in the click-through layer");
+  closed.unmount();
+
+  store.set(true);
+  const open = render(Panel, props);
+  assert.equal(open.tree.props.role, "dialog");
+  const head = open.tree.children.find((child) => child.props.className === "dsh-igr-panel-head");
+  assert.equal(head.children.find((c) => c.props.className === "dsh-igr-panel-count").children, "1");
+
+  const body = open.tree.children.find((child) => child.props.className === "dsh-igr-panel-body");
+  assert.equal(body.children.type, ImageGallery);
+  assert.deepEqual(body.children.props.images.map((i) => i.attachment.attachmentId), ["a1"]);
+  assert.equal(body.children.props.load, load, "the panel reuses the session-authorized loader");
+
+  assert.equal(typeof listener, "function", "the panel subscribes to the live session face");
+  head.children.find((c) => c.props.className === "dsh-igr-panel-close").props.onClick();
+  assert.equal(store.get(), false, "the close control shuts the shared store");
+
+  open.unmount();
+  assert.equal(listener, undefined, "unmounting releases the session subscription");
+});
+
+test("the overlay panel degrades when no session is current or the binding is gone", () => {
+  const store = client.createPanelStore();
+  store.set(true);
+  const Panel = client.makeGalleryPanel(store, () => () => Promise.resolve(""), () => ({ binding: () => undefined }));
+
+  const none = render(Panel, { useSessions: (select) => select({ current: undefined }) });
+  const noneBody = none.tree.children.find((child) => child.props.className === "dsh-igr-panel-body");
+  assert.equal(noneBody.children.props.className, "dsh-igr-note");
+  assert.equal(noneBody.children.children, "Open a session to see its images.");
+  none.unmount();
+
+  const missing = render(Panel, { useSessions: (select) => select({ current: "gone" }) });
+  const missingBody = missing.tree.children.find((child) => child.props.className === "dsh-igr-panel-body");
+  assert.equal(missingBody.children.children, "No images in this session yet.");
+  missing.unmount();
+});
+//#endregion

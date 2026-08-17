@@ -85,6 +85,15 @@ Host half 严格解码 base64 后调用 `attachments.saveImage()`。DSH 会验�
 
 Client half 在 `tool.call.toolview` 中注册 `generate_image` 专用视图，通过 conversation 服务取得当前 session 授权的 attachment URL，再使用 DSH `ImageGallery` 渲染，支持加载失败重试和原图预览。
 
+## 会话图片画廊
+
+Client half 还提供会话图片画廊：
+
+- 在 `sidebar.footer.action` 中新增一个位于 Settings 旁的开关，并适配侧边栏展开与收起（rail）两种状态。
+- 在 `shell.overlay` 中提供面板，列出当前会话的全部持久化图片，按最新优先排序并按 attachment id 去重。
+
+面板会收集用户上传、assistant 图片块以及工具结果中的图片（包括内容块被裁剪时使用的 presentation meta 回退），因此不局限于本插件生成的图片。两个位置都是使用命名空间 id 的可叠加 list 条目，不会替换任何随 DSH 发布的侧边栏或浮层 UI。面板关闭时不渲染任何内容，且仅在挂载期间订阅当前会话的对话快照。
+
 ## 错误与限制
 
 错误使用稳定的 `ImageGenerationError.code`，包括 `MISSING_CREDENTIAL`、`HTTP_ERROR`、`TIMEOUT`、`BAD_BASE64`、`OVERSIZED`、`REFUSED` 和 `MISSING_OUTPUT`。响应与图片大小有明确上限；远程图片 URL 和 HTTP redirect 会被拒绝。

@@ -4,6 +4,10 @@ All notable changes to this project are documented here. This project follows Se
 
 ## [Unreleased]
 
+### Added
+
+- Session image gallery in the web client: a `sidebar.footer.action` toggle and a `shell.overlay` panel listing the current session's durable images, newest first and deduplicated by attachment id.
+
 ## [0.1.0] - 2025-08-17
 
 ### Added
