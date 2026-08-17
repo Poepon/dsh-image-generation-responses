@@ -6,7 +6,7 @@ All notable changes to this project are documented here. This project follows Se
 
 ### Added
 
-- Session image gallery in the web client: a `sidebar.footer.action` toggle and a `shell.overlay` vertical dock pinned to the conversation column's left edge, listing the current session's durable images one per row, newest first and deduplicated by attachment id.
+- Session image dock in the web client: a vertically centred strip beside the conversation column, shown automatically whenever the conversation holds an image. Thumbnails are half the chat-history `single` size, newest first and deduplicated by attachment id; the strip stacks above the original-image preview so clicking another thumbnail switches the preview in place.
 
 ## [0.1.0] - 2025-08-17
 

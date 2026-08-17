@@ -22,7 +22,12 @@ const CLIENT_PATH = fileURLToPath(new URL("../lib/client.js", import.meta.url));
 
 /** Stand-ins for the attachment atoms; identity is enough to assert dispatch. */
 const ImageGallery = function ImageGallery() {};
-const MessageImage = function MessageImage() {};
+const ImageLightbox = function ImageLightbox() {};
+
+/** Minimal react-dom seed: the dock only needs `createPortal`. */
+const ReactDOM = {
+  createPortal: (children, container) => ({ portal: true, container, children }),
+};
 
 /**
  * Minimal React seed. `createElement` backs every view assertion; `useState`
@@ -137,7 +142,8 @@ function materialize() {
 
   const require = (spec) => {
     if (spec === "react") return React;
-    if (spec === "@deepseek-ai/dsh-client-ui-attachment") return { ImageGallery, MessageImage };
+    if (spec === "react-dom") return ReactDOM;
+    if (spec === "@deepseek-ai/dsh-client-ui-attachment") return { ImageGallery, ImageLightbox };
     throw new Error(`unexpected require("${spec}") — not a platform seed word`);
   };
   return handoffs[0].factory(require);
@@ -208,20 +214,21 @@ test("apply claims the generate_image key of tool.call.toolview and unwinds with
 
   client.apply(ctx);
 
-  assert.deepEqual(injections, ["tool.call.toolview", "sidebar.footer.action", "shell.overlay"]);
-  assert.equal(registrations.length, 3);
+  assert.deepEqual(injections, ["tool.call.toolview", "shell.overlay"]);
+  assert.equal(registrations.length, 2, "the dock needs no menu-bar action button");
   assert.equal(registrations[0].options.name, "tool.call.toolview");
   assert.equal(registrations[0].options.key, "generate_image");
   assert.equal(typeof registrations[0].component, "function");
 
-  // The gallery seats are additive list entries addressed by a namespaced id,
-  // so no shipped sidebar or overlay occupant is replaced.
-  assert.equal(registrations[1].options.name, "sidebar.footer.action");
-  assert.equal(registrations[1].options.id, "dsh-image-generation-responses/gallery-toggle");
+  // The dock is an additive list entry addressed by a namespaced id, so no
+  // shipped overlay occupant is replaced.
+  assert.equal(registrations[1].options.name, "shell.overlay");
+  assert.equal(registrations[1].options.id, "dsh-image-generation-responses/gallery-panel");
   assert.equal(registrations[1].options.key, undefined);
-  assert.equal(registrations[2].options.name, "shell.overlay");
-  assert.equal(registrations[2].options.id, "dsh-image-generation-responses/gallery-panel");
-  assert.equal(registrations[2].options.key, undefined);
+  assert.ok(
+    !injections.includes("sidebar.footer.action"),
+    "the sidebar footer seat is no longer occupied",
+  );
 
   // Every side effect is reversible through the fiber's disposers.
   assert.equal(effects.length, 1);
@@ -384,135 +391,162 @@ test("sameImages keeps the projection identity stable across snapshot flushes", 
   assert.equal(client.sameImages(a, [{ attachment: ref("x") }]), false);
 });
 
-test("the panel store notifies subscribers only on real transitions and unsubscribes", () => {
-  const store = client.createPanelStore();
-  let notified = 0;
-  const stop = store.subscribe(() => { notified += 1; });
-
-  assert.equal(store.get(), false, "the panel starts closed");
-  store.set(false);
-  assert.equal(notified, 0, "an idempotent write notifies nobody");
-  store.set(true);
-  assert.equal(store.get(), true);
-  assert.equal(notified, 1);
-
-  stop();
-  store.set(false);
-  assert.equal(notified, 1, "a removed listener stops hearing changes");
-});
-
-test("the sidebar toggle reflects and drives the shared panel state", () => {
-  const store = client.createPanelStore();
-  const Toggle = client.makeGalleryButton(store);
-
-  const wide = render(Toggle, { wide: true });
-  assert.equal(wide.tree.type, "button");
-  assert.equal(wide.tree.props["aria-pressed"], false);
-  assert.equal(wide.tree.props["data-rail"], undefined);
-  assert.equal(wide.tree.children.length, 2, "the wide column shows icon + label");
-
-  wide.tree.props.onClick();
-  assert.equal(store.get(), true, "clicking opens the panel");
-  assert.equal(wide.rerender().props["aria-pressed"], true);
-  wide.unmount();
-
-  const rail = render(Toggle, { wide: false });
-  assert.equal(rail.tree.props["data-rail"], true);
-  assert.equal(rail.tree.children.length, 1, "the rail column shows the icon only");
-  assert.equal(rail.tree.props["aria-pressed"], true, "both seats read one shared store");
-  rail.unmount();
-});
-
-test("the overlay panel stays empty while closed and stacks the current session's images when open", () => {
-  const store = client.createPanelStore();
+/** Build a session double whose snapshot holds the given images, newest last. */
+function sessionWith(ids) {
   const snapshot = {
-    nodes: [
-      { kind: "user", seq: 1, content: [{ type: "image", attachment: ref("a1") }] },
-      { kind: "assistant", seq: 2, blocks: [{ kind: "image", attachment: ref("a2") }] },
-    ],
+    nodes: ids.map((id, seq) => ({
+      kind: "user",
+      seq: seq + 1,
+      content: [{ type: "image", attachment: ref(id) }],
+    })),
   };
   let listener;
-  const session = {
-    getSnapshot: () => snapshot,
-    subscribe: (fn) => {
-      listener = fn;
-      return () => { listener = undefined; };
+  return {
+    face: {
+      getSnapshot: () => snapshot,
+      subscribe: (fn) => {
+        listener = fn;
+        return () => { listener = undefined; };
+      },
     },
+    get subscribed() { return typeof listener === "function"; },
   };
-  const sessions = { binding: (id) => (id === "s1" ? { sessionId: id, session } : undefined) };
-  const load = () => Promise.resolve("blob:x");
-  const Panel = client.makeGalleryPanel(store, () => load, () => sessions);
-  const props = { useSessions: (select) => select({ current: "s1" }) };
+}
 
-  const closed = render(Panel, props);
-  assert.equal(closed.tree, null, "a closed panel occupies no space in the click-through layer");
-  closed.unmount();
+/** Let the loader promises settle so resolved URLs reach the dock's state. */
+const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-  store.set(true);
-  const open = render(Panel, props);
-  assert.equal(open.tree.props.role, "dialog");
-  const head = open.tree.children.find((child) => child.props.className === "dsh-igr-panel-head");
-  assert.equal(head.children.find((c) => c.props.className === "dsh-igr-panel-count").children, "2");
+test("the dock renders nothing until the session actually holds an image", async () => {
+  const empty = sessionWith([]);
+  const sessions = { binding: () => ({ sessionId: "s1", session: empty.face }) };
+  const Dock = client.makeGalleryPanel(() => () => Promise.resolve("blob:x"), () => sessions);
 
-  const body = open.tree.children.find((child) => child.props.className === "dsh-igr-panel-body");
-  const stack = body.children;
-  assert.equal(stack.props.className, "dsh-igr-stack", "images stack vertically, one per row");
+  // No toggle exists, so absence is the whole "closed" state.
+  const none = render(Dock, { useSessions: (select) => select({ current: "s1" }) });
+  assert.equal(none.tree, null, "an image-free conversation contributes no dock");
+  none.unmount();
 
-  // ImageGallery would collapse a multi-image group into 64px tiles, so the
-  // vertical dock drives MessageImage directly at `single` size instead.
-  assert.deepEqual(stack.children.map((child) => child.type), [MessageImage, MessageImage]);
-  assert.deepEqual(stack.children.map((child) => child.props.variant), ["single", "single"]);
-  assert.deepEqual(stack.children.map((child) => child.props.attachment.attachmentId), ["a2", "a1"]);
-  assert.deepEqual(stack.children.map((child) => child.props.key), ["a2", "a1"]);
-  assert.equal(stack.children[0].props.load, load, "the panel reuses the session-authorized loader");
-  assert.equal(stack.children[1].props.load, load, "every row shares one loader identity");
-
-  assert.equal(typeof listener, "function", "the panel subscribes to the live session face");
-  head.children.find((c) => c.props.className === "dsh-igr-panel-close").props.onClick();
-  assert.equal(store.get(), false, "the close control shuts the shared store");
-
-  open.unmount();
-  assert.equal(listener, undefined, "unmounting releases the session subscription");
+  const noSession = render(Dock, { useSessions: (select) => select({ current: undefined }) });
+  assert.equal(noSession.tree, null, "no current session means no dock");
+  noSession.unmount();
 });
 
-test("the open dock pins itself to the measured sidebar width", () => {
-  const store = client.createPanelStore();
-  store.set(true);
-  const Panel = client.makeGalleryPanel(store, () => () => Promise.resolve(""), () => ({ binding: () => undefined }));
-  const props = { useSessions: (select) => select({ current: undefined }) };
-
-  // No document in this realm: the dock must still render, flush against the
-  // frame's left edge rather than throwing on the missing measurement target.
-  const bare = render(Panel, props);
-  assert.equal(bare.tree.props.style.left, "0px");
-  bare.unmount();
+test("the dock portals to body, centres vertically, and sits above the lightbox", async () => {
+  const live = sessionWith(["a1", "a2"]);
+  const sessions = { binding: (id) => (id === "s1" ? { sessionId: id, session: live.face } : undefined) };
+  const load = (attachment) => Promise.resolve(`blob:${attachment.attachmentId}`);
+  const Dock = client.makeGalleryPanel(() => load, () => sessions);
+  const props = { useSessions: (select) => select({ current: "s1" }) };
 
   const column = { getBoundingClientRect: () => ({ width: 248 }) };
   const layer = { parentElement: { firstElementChild: column } };
-  global.document = { querySelector: (sel) => (sel === "[data-shell-overlay]" ? layer : null) };
+  const body = { tag: "body" };
+  global.document = { body, querySelector: (sel) => (sel === "[data-shell-overlay]" ? layer : null) };
   try {
-    const docked = render(Panel, props);
-    assert.equal(docked.tree.props.style.left, "248px", "the dock sits at the conversation column's left edge");
-    docked.unmount();
+    const view = render(Dock, props);
+    await flush();
+    const tree = view.rerender();
+
+    // Portalling to body is what escapes the overlay layer's own stacking
+    // context, which would otherwise trap the strip beneath the lightbox.
+    assert.equal(tree.portal, true);
+    assert.equal(tree.container, body);
+
+    const dock = tree.children.find((child) => child.props.className === "dsh-igr-dock");
+    assert.equal(dock.props.style.left, "260px", "offset by the measured sidebar width plus a gutter");
+    assert.equal(dock.props.role, "list");
+
+    const tiles = dock.children;
+    assert.deepEqual(tiles.map((t) => t.props.key), ["a2", "a1"], "newest image first");
+    assert.deepEqual(tiles.map((t) => t.children.type), ["img", "img"]);
+    assert.deepEqual(tiles.map((t) => t.children.props.src), ["blob:a2", "blob:a1"]);
+    assert.deepEqual(tiles.map((t) => t.props.disabled), [false, false]);
+
+    assert.ok(live.subscribed, "the dock subscribes to the live session face");
+    view.unmount();
+    assert.equal(live.subscribed, false, "unmounting releases the session subscription");
   } finally {
     delete global.document;
   }
 });
 
-test("the overlay panel degrades when no session is current or the binding is gone", () => {
-  const store = client.createPanelStore();
-  store.set(true);
-  const Panel = client.makeGalleryPanel(store, () => () => Promise.resolve(""), () => ({ binding: () => undefined }));
+test("clicking a thumbnail opens the preview and another switches it in place", async () => {
+  const live = sessionWith(["a1", "a2"]);
+  const sessions = { binding: () => ({ sessionId: "s1", session: live.face }) };
+  const load = (attachment) => Promise.resolve(`blob:${attachment.attachmentId}`);
+  const Dock = client.makeGalleryPanel(() => load, () => sessions);
+  const props = { useSessions: (select) => select({ current: "s1" }) };
 
-  const none = render(Panel, { useSessions: (select) => select({ current: undefined }) });
-  const noneBody = none.tree.children.find((child) => child.props.className === "dsh-igr-panel-body");
-  assert.equal(noneBody.children.props.className, "dsh-igr-note");
-  assert.equal(noneBody.children.children, "Open a session to see its images.");
-  none.unmount();
+  global.document = { body: {}, querySelector: () => null };
+  try {
+    const view = render(Dock, props);
+    await flush();
+    let tree = view.rerender();
 
-  const missing = render(Panel, { useSessions: (select) => select({ current: "gone" }) });
-  const missingBody = missing.tree.children.find((child) => child.props.className === "dsh-igr-panel-body");
-  assert.equal(missingBody.children.children, "No images in this session yet.");
-  missing.unmount();
+    const dockOf = (t) => t.children.find((child) => child.props.className === "dsh-igr-dock");
+    const previewOf = (t) => t.children.find((child) => child.type === ImageLightbox);
+
+    assert.equal(previewOf(tree), undefined, "no preview until a thumbnail is clicked");
+
+    dockOf(tree).children[0].props.onClick();
+    tree = view.rerender();
+    assert.equal(previewOf(tree).props.src, "blob:a2");
+    assert.equal(dockOf(tree).children[0].props["data-active"], true);
+
+    // The strip stays mounted above the open preview, so a second click swaps
+    // the previewed image rather than needing a close first.
+    dockOf(tree).children[1].props.onClick();
+    tree = view.rerender();
+    assert.equal(previewOf(tree).props.src, "blob:a1", "the preview switches in place");
+    assert.equal(dockOf(tree).children[0].props["data-active"], undefined);
+    assert.equal(dockOf(tree).children[1].props["data-active"], true);
+
+    previewOf(tree).props.onClose();
+    tree = view.rerender();
+    assert.equal(previewOf(tree), undefined, "closing dismisses the preview but keeps the strip");
+    assert.ok(dockOf(tree) !== undefined);
+    view.unmount();
+  } finally {
+    delete global.document;
+  }
+});
+
+test("an unresolved thumbnail is inert and a vanished preview target is dropped", async () => {
+  const live = sessionWith(["a1"]);
+  const sessions = { binding: () => ({ sessionId: "s1", session: live.face }) };
+  const Dock = client.makeGalleryPanel(() => () => new Promise(() => {}), () => sessions);
+  const props = { useSessions: (select) => select({ current: "s1" }) };
+
+  global.document = { body: {}, querySelector: () => null };
+  try {
+    const view = render(Dock, props);
+    await flush();
+    const tree = view.rerender();
+    const tile = tree.children.find((c) => c.props.className === "dsh-igr-dock").children[0];
+
+    assert.equal(tile.props.disabled, true, "a pending image cannot open a preview");
+    assert.equal(tile.children.props.className, "dsh-igr-thumb-pending");
+    tile.props.onClick();
+    assert.equal(
+      view.rerender().children.find((c) => c.type === ImageLightbox),
+      undefined,
+      "clicking a pending tile opens nothing",
+    );
+    view.unmount();
+  } finally {
+    delete global.document;
+  }
+});
+
+test("the dock degrades when the portal or document is unavailable", () => {
+  const live = sessionWith(["a1"]);
+  const sessions = { binding: () => ({ sessionId: "s1", session: live.face }) };
+  const Dock = client.makeGalleryPanel(() => () => Promise.resolve("blob:a1"), () => sessions);
+  const props = { useSessions: (select) => select({ current: "s1" }) };
+
+  // No document in this realm at all: the dock must return null, not throw.
+  const bare = render(Dock, props);
+  assert.equal(bare.tree, null);
+  bare.unmount();
 });
 //#endregion

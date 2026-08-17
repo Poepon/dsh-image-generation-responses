@@ -85,16 +85,15 @@ Host half 严格解码 base64 后调用 `attachments.saveImage()`。DSH 会验�
 
 Client half 在 `tool.call.toolview` 中注册 `generate_image` 专用视图，通过 conversation 服务取得当前 session 授权的 attachment URL，再使用 DSH `ImageGallery` 渲染，支持加载失败重试和原图预览。
 
-## 会话图片画廊
+## 会话图片侧栏
 
-Client half 还提供会话图片画廊：
+Client half 还提供会话图片侧栏：当前会话的全部持久化图片组成一条垂直居中的竖条，位于对话列旁边。
 
-- 在 `sidebar.footer.action` 中新增一个位于 Settings 旁的开关，并适配侧边栏展开与收起（rail）两种状态。
-- 在 `shell.overlay` 中提供垂直侧栏，贴合对话列左边缘，列出当前会话的全部持久化图片，按最新优先排序并按 attachment id 去重。
+没有菜单栏或侧边栏按钮。上下文中有图片时侧栏自动出现，没有图片时完全不渲染。缩略图上限 120px，即对话历史中 240px `single` 尺寸的一半，按最新优先排序并按 attachment id 去重。
 
-图片按每行一张的 `single` 完整尺寸垂直堆叠，而非 64px 方块：`ImageGallery` 在多于一张时会切换为方块平铺，因此侧栏直接使用 `MessageImage`。侧栏占满 frame 高度，并测量侧边栏列宽，使其在侧边栏收起与拖动改变宽度时始终贴合对话列。
+点击缩略图打开原图预览。侧栏通过 `document.body` portal 渲染并叠在预览之上，因此预览打开时侧栏依然可见可点：点击另一张缩略图会直接切换预览，无需先关闭。这个 portal 是必需的——`shell.overlay` 层自身在 `z-index: 20` 形成层叠上下文，否则侧栏会被压在预览的 `z-index: 1000` 之下。
 
-面板会收集用户上传、assistant 图片块以及工具结果中的图片（包括内容块被裁剪时使用的 presentation meta 回退），因此不局限于本插件生成的图片。两个位置都是使用命名空间 id 的可叠加 list 条目，不会替换任何随 DSH 发布的侧边栏或浮层 UI。面板关闭时不渲染任何内容，且仅在挂载期间订阅当前会话的对话快照。
+侧栏会收集用户上传、assistant 图片块以及工具结果中的图片（包括内容块被裁剪时使用的 presentation meta 回退），因此不局限于本插件生成的图片。它是使用命名空间 id 的可叠加 `shell.overlay` list 条目，不会替换任何随 DSH 发布的浮层 UI，且仅在挂载期间订阅当前会话的对话快照。它会测量侧边栏列宽，使其在侧边栏收起与拖动改变宽度时始终贴合对话列。
 
 ## 错误与限制
 
@@ -115,7 +114,7 @@ npm pack --dry-run
 
 `lib/client.js` 直接以 DSH 可分发的 browser module-loader 最终格式维护，不存在未提交的生成产物或隐藏转换步骤；修改时必须保持 `window.__ModuleLoader__.load({ id, factory })` 契约与平台 seed module 边界。
 
-React 与 `@deepseek-ai/dsh-client-ui-attachment` 标记为 optional npm peer，是因为受支持的 DSH Web Shell 会将它们作为平台 seed module 提供；不支持脱离 DSH Shell 单独加载这个 Client half。
+React、React DOM 与 `@deepseek-ai/dsh-client-ui-attachment` 标记为 optional npm peer，是因为受支持的 DSH Web Shell 会将它们作为平台 seed module 提供；不支持脱离 DSH Shell 单独加载这个 Client half。
 
 安全问题请查看 [SECURITY.md](./SECURITY.md)，贡献流程请查看 [CONTRIBUTING.md](./CONTRIBUTING.md)，维护者发布清单请查看 [RELEASING.md](./RELEASING.md)。
 

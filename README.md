@@ -85,16 +85,15 @@ The Host half strictly decodes base64 and calls `attachments.saveImage()`. DSH v
 
 The Client half registers a keyed `generate_image` view in `tool.call.toolview`. It resolves a session-authorized attachment URL through the conversation service and renders DSH's `ImageGallery`, including loading, retry, and original-image preview behavior.
 
-## Session image gallery
+## Session image dock
 
-The Client half also contributes a session image gallery:
+The Client half also contributes a session image dock: a vertically centred strip of every durable image in the current session, beside the conversation column.
 
-- An additive toggle in `sidebar.footer.action`, beside Settings. It follows the sidebar's wide and rail states.
-- A vertical dock in `shell.overlay`, pinned to the conversation column's left edge, listing every durable image in the current session newest first and deduplicated by attachment id.
+It has no menu-bar or sidebar button. The strip appears exactly when the conversation holds at least one image and is absent otherwise. Thumbnails are capped at 120px — half the 240px `single` box used in chat history — newest first and deduplicated by attachment id.
 
-Images stack one per row at full `single` size rather than as 64px tiles: `ImageGallery` switches to tiles past a single image, so the dock drives `MessageImage` directly. The dock spans the frame's full height and measures the sidebar column so it stays flush against the conversation column across collapse and drag.
+Clicking a thumbnail opens the original-image preview. The strip renders through a `document.body` portal and stacks above that preview, so it stays visible and clickable while a preview is open: clicking another thumbnail switches the preview in place rather than requiring a close first. This portal is required — the `shell.overlay` layer establishes its own stacking context at `z-index: 20`, which would otherwise trap the strip beneath the lightbox's `z-index: 1000`.
 
-The panel collects images from user uploads, assistant image blocks, and tool results (including the presentation-meta fallback used when content blocks were pruned), so it is not limited to images this plugin generated. Both seats are additive list entries addressed by namespaced ids, so no shipped sidebar or overlay UI is replaced. The panel renders nothing while closed, and it subscribes to the current session's conversation snapshot only while mounted.
+The dock collects images from user uploads, assistant image blocks, and tool results (including the presentation-meta fallback used when content blocks were pruned), so it is not limited to images this plugin generated. It is an additive `shell.overlay` list entry addressed by a namespaced id, so no shipped overlay UI is replaced, and it subscribes to the current session's conversation snapshot only while mounted. It measures the sidebar column so it stays flush against the conversation column across collapse and drag.
 
 ## Errors and limits
 
@@ -115,7 +114,7 @@ Tests use mocked transport and tiny fixtures. They require no credentials and ma
 
 `lib/client.js` is authored directly in DSH's distributable browser module-loader format. There is intentionally no generated client artifact or hidden transform step; changes must preserve the `window.__ModuleLoader__.load({ id, factory })` contract and platform seed-module boundary.
 
-React and `@deepseek-ai/dsh-client-ui-attachment` are optional npm peers because the supported DSH web shell supplies them as platform seed modules. Materializing this Client half outside that shell is unsupported.
+React, React DOM, and `@deepseek-ai/dsh-client-ui-attachment` are optional npm peers because the supported DSH web shell supplies them as platform seed modules. Materializing this Client half outside that shell is unsupported.
 
 See [SECURITY.md](./SECURITY.md) for private vulnerability reporting, [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution guidelines, and [RELEASING.md](./RELEASING.md) for the maintainer release checklist.
 
