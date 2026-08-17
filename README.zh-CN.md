@@ -77,7 +77,7 @@ API Key 应通过 DSH credentials 服务或环境变量提供。不要把真实�
 generate_image(prompt, images?, input_fidelity?, size?, quality?, background?, format?)
 ```
 
-返回值包含持久化 attachment 引用、模型名、生成参数、实际使用的 `action`，以及服务端提供的调用 ID。模型侧内容由文字摘要和 `image` ContentBlock 组成。
+返回值包含持久化 attachment 引用、模型名、生成参数、实际使用的 `action`，以及服务端提供的调用 ID。模型侧内容由一段注明 attachment id 的文字摘要，以及**仅在对话模型声明支持图片输入时**才携带的 `image` ContentBlock 组成（每次调用根据会话请求头中的路由，通过 `llm.resolveModelInfo` 判定）。不支持图片输入的模型只会收到纯文本结果——pi-ai 等适配器在工具结果含模型无法读取的图片时会以 `UNSUPPORTED_CONTENT` 中止整轮。无论哪种情况，Web UI 都通过 presentation meta 正常渲染图片。
 
 ### 图生图（图片编辑）
 

@@ -77,7 +77,7 @@ After first installing this package, restart the running DSH process and refresh
 generate_image(prompt, images?, input_fidelity?, size?, quality?, background?, format?)
 ```
 
-The tool returns canonical JSON metadata including the durable attachment reference, model names, generation options, the resolved `action`, and provider IDs when present. Its model-facing rendering contains a text summary and an `image` ContentBlock.
+The tool returns canonical JSON metadata including the durable attachment reference, model names, generation options, the resolved `action`, and provider IDs when present. Its model-facing rendering contains a text summary naming the saved attachment id, plus an `image` ContentBlock **only when the conversation model declares image input** (resolved per call from the session's request header through `llm.resolveModelInfo`). Text-only models such as a non-vision route receive a text-only result — adapters like pi-ai reject a whole turn with `UNSUPPORTED_CONTENT` when tool-result content carries an image the model cannot read. The web UI is unaffected either way; it renders the result from the presentation meta.
 
 ### Image-to-image (editing)
 

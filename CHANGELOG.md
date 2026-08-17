@@ -4,6 +4,10 @@ All notable changes to this project are documented here. This project follows Se
 
 ## [Unreleased]
 
+### Fixed
+
+- The model-facing tool result no longer crashes text-only conversation models: the `image` ContentBlock is included only when the route declares image input (resolved per call from the session's request header through `llm.resolveModelInfo`), which previously aborted the whole turn with `UNSUPPORTED_CONTENT` on adapters such as pi-ai. The text summary now always names the saved attachment id, and the UI still renders the image from the presentation meta.
+
 ### Added
 
 - Image-to-image editing: `generate_image` accepts `images` (attachment ids from the calling conversation) and the edit-only `input_fidelity`, sending `action: "edit"` with `input_image` blocks. Reference bytes are read back through `attachments.readImage` against the full reference recovered from the session log, so editing is confined to images that session can already see. The text-to-image request shape is unchanged.

@@ -16,6 +16,7 @@ import {
   apply,
   buildImageGenerationRequest,
   indexSessionImages,
+  modelAcceptsImages,
   name,
   inject,
 } from "../lib/index.js";
@@ -27,9 +28,10 @@ const PNG_1PX = Buffer.from(
 );
 
 /** A stub harness context: tools registry, per-call credential, attachment seam. */
-function stubCtx({ credential, storedImages = {} } = {}) {
+function stubCtx({ credential, storedImages = {}, llm } = {}) {
   const calls = { credentials: [], saveImage: [], readImage: [], registered: null };
   const ctx = {
+    get: (name) => (name === "llm" ? llm : undefined),
     tools: {
       register: (definition) => {
         calls.registered = definition;
@@ -66,14 +68,16 @@ function stubCtx({ credential, storedImages = {} } = {}) {
 
 /**
  * A stub calling agent whose session log carries the given image references, in
- * the same leaf shapes the real durable log uses.
+ * the same leaf shapes the real durable log uses. `header` supplies the folded
+ * request header the session reports (provider/model of the current route).
  */
-function stubAgent(refs) {
+function stubAgent(refs, header) {
   return {
     session: {
       events: [
         { type: "user/message", data: { content: refs.map((ref) => ({ type: "image", attachment: ref })) } },
       ],
+      requestHeader: () => header,
     },
   };
 }
@@ -180,13 +184,15 @@ test("generate_image posts the exact official wire shape and saves the decoded a
     assert.equal(value.format, "png");
     assert.equal(value.callId, "call_1");
     assert.equal(value.responseId, "resp_abc");
-    // Image content render.
+    // Capability-gated render: this execution has no calling agent, so the
+    // route is unknown and the model-facing result stays text-only (the image
+    // block is added only for routes that declare image input).
     const blocks = tool.output.render({ prompt: "a red panda" }, value);
-    assert.equal(blocks.length, 2);
+    assert.equal(blocks.length, 1);
     assert.equal(blocks[0].type, "text");
     assert.match(blocks[0].text, /Generated image \(png, 1024x1024, medium\)/);
-    assert.equal(blocks[1].type, "image");
-    assert.equal(blocks[1].attachment, value.attachment);
+    assert.ok(blocks[0].text.includes("att_1"));
+    assert.equal(value.modelSeesImage, false);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -439,5 +445,121 @@ test("indexSessionImages reads every durable image shape and ignores junk", () =
   assert.equal(index.has("bad"), false, "an incomplete reference is unusable and dropped");
   assert.equal(indexSessionImages(undefined).size, 0);
   assert.equal(indexSessionImages({}).size, 0);
+});
+//#endregion
+
+//#region model capability gating
+
+/** A stub llm service whose one model declares the given input modalities. */
+function stubLlm(modalities, { throwError } = {}) {
+  return {
+    resolveModelInfo: async (provider, model, signal) => {
+      if (throwError) throw new Error("capability lookup failed");
+      return {
+        provider,
+        id: model,
+        name: model,
+        ...(modalities === undefined ? {} : { inputModalities: modalities }),
+      };
+    },
+  };
+}
+
+const HEADER = { config: { provider: "pi-ai", model: "claude-opus-5" } };
+
+/** Run one successful generation and return the canonical value. */
+async function runGeneration(ctx, calls, exec) {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = okFetch([]);
+  try {
+    apply(ctx, {});
+    return await calls.registered.execute({ prompt: "a red panda" }, exec);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+test("the model-facing result carries the image only when the route accepts image input", async () => {
+  const { ctx, calls } = stubCtx({
+    credential: { value: "sk-test", source: "env" },
+    llm: stubLlm(["text", "image"]),
+  });
+  const value = await runGeneration(ctx, calls, {
+    signal: new AbortController().signal,
+    agent: stubAgent([], HEADER),
+  });
+  assert.equal(value.modelSeesImage, true, "a vision-capable route keeps the image block");
+
+  const blocks = calls.registered.output.render({ prompt: "x" }, value);
+  assert.equal(blocks.length, 2);
+  assert.equal(blocks[1].type, "image");
+  assert.deepEqual(blocks[1].attachment, value.attachment);
+  assert.ok(blocks[0].text.includes(value.attachment.attachmentId),
+    "the summary names the attachment id so later edit calls can reference it");
+});
+
+test("a text-only route gets a text-only result — no UNSUPPORTED_CONTENT resurrection", async () => {
+  const { ctx, calls } = stubCtx({
+    credential: { value: "sk-test", source: "env" },
+    llm: stubLlm(["text"]),
+  });
+  const value = await runGeneration(ctx, calls, {
+    signal: new AbortController().signal,
+    agent: stubAgent([], HEADER),
+  });
+  assert.equal(value.modelSeesImage, false, "the text-only route is detected");
+
+  const blocks = calls.registered.output.render({ prompt: "x" }, value);
+  assert.equal(blocks.length, 1, "the image block is withheld from the model");
+  assert.equal(blocks[0].type, "text");
+  assert.ok(blocks[0].text.includes(value.attachment.attachmentId));
+  assert.ok(blocks[0].text.includes("Generated image"));
+});
+
+test("capability gating is conservative for unknown routes and lookup failures", async () => {
+  const signal = new AbortController().signal;
+
+  // No llm service at all.
+  {
+    const { ctx } = stubCtx({ credential: { value: "sk", source: "env" } });
+    assert.equal(await modelAcceptsImages(ctx, { signal, agent: stubAgent([], HEADER) }), false);
+  }
+  // No calling agent, or no folded request header yet.
+  {
+    const { ctx } = stubCtx({ credential: { value: "sk", source: "env" }, llm: stubLlm(["text", "image"]) });
+    assert.equal(await modelAcceptsImages(ctx, { signal }), false);
+    assert.equal(await modelAcceptsImages(ctx, { signal, agent: stubAgent([], undefined) }), false);
+  }
+  // An adapter that reports no modality list (unknown capability).
+  {
+    const { ctx } = stubCtx({ credential: { value: "sk", source: "env" }, llm: stubLlm(undefined) });
+    assert.equal(await modelAcceptsImages(ctx, { signal, agent: stubAgent([], HEADER) }), false);
+  }
+  // A lookup that throws must never bubble into the tool result.
+  {
+    const { ctx } = stubCtx({ credential: { value: "sk", source: "env" }, llm: stubLlm(["text", "image"], { throwError: true }) });
+    assert.equal(await modelAcceptsImages(ctx, { signal, agent: stubAgent([], HEADER) }), false);
+  }
+  // A header with an empty route (waterfall unresolved) is not a capability.
+  {
+    const { ctx } = stubCtx({ credential: { value: "sk", source: "env" }, llm: stubLlm(["text", "image"]) });
+    assert.equal(
+      await modelAcceptsImages(ctx, { signal, agent: stubAgent([], { config: { provider: "", model: "" } }) }),
+      false,
+    );
+  }
+});
+
+test("execute records the gated decision in the canonical value", async () => {
+  const { ctx, calls } = stubCtx({
+    credential: { value: "sk-test", source: "env" },
+    llm: stubLlm(["text"]),
+  });
+  const value = await runGeneration(ctx, calls, {
+    signal: new AbortController().signal,
+    agent: stubAgent([], HEADER),
+  });
+  assert.equal(value.modelSeesImage, false);
+  assert.equal(value.action, "generate");
 });
 //#endregion
