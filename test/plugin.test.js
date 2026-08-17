@@ -29,12 +29,15 @@ const PNG_1PX = Buffer.from(
 
 /** A stub harness context: tools registry, per-call credential, attachment seam. */
 function stubCtx({ credential, storedImages = {}, llm } = {}) {
-  const calls = { credentials: [], saveImage: [], readImage: [], registered: null };
+  const calls = { credentials: [], saveImage: [], readImage: [], registered: null, tools: new Map() };
   const ctx = {
     get: (name) => (name === "llm" ? llm : undefined),
     tools: {
       register: (definition) => {
-        calls.registered = definition;
+        // `registered` keeps the first tool (generate_image) for the existing
+        // assertions; `tools` keys every registration by name for the rest.
+        if (calls.registered === null) calls.registered = definition;
+        calls.tools.set(definition.name, definition);
       },
     },
     credentials: {
@@ -219,12 +222,12 @@ test("generate_image surfaces HTTP failures with status and provider detail", as
   }
 });
 
-/** Re-run apply and capture the registered definition (helper for one-off tests). */
+/** Re-run apply and capture the generate_image definition (helper for one-off tests). */
 function registeredDefinition(ctx) {
   let captured;
   const original = ctx.tools.register;
   ctx.tools.register = (definition) => {
-    captured = definition;
+    if (definition.name === "generate_image") captured = definition;
     original(definition);
   };
   apply(ctx, {});
@@ -561,5 +564,166 @@ test("execute records the gated decision in the canonical value", async () => {
   });
   assert.equal(value.modelSeesImage, false);
   assert.equal(value.action, "generate");
+});
+//#endregion
+
+//#region analyze_image (image understanding)
+
+/** Mock a single successful vision completion. */
+function visionFetch(posted, text = "It is a red-and-white ranchu goldfish.") {
+  return async (url, init) => {
+    posted.push({ url, init });
+    const body = JSON.stringify({
+      id: "resp_vis",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
+    });
+    return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  };
+}
+
+test("apply registers analyze_image with a schema defineTool validates", () => {
+  const { ctx, calls } = stubCtx();
+  apply(ctx, {});
+  const tool = calls.tools.get("analyze_image");
+  assert.ok(tool, "analyze_image was registered alongside generate_image");
+  assert.ok(calls.tools.get("generate_image"), "generate_image is still registered");
+  assert.deepEqual(tool.parameters.required.sort(), ["images", "question"]);
+  assert.equal(tool.parameters.properties.images.type, "array");
+  assert.equal(tool.output.schema.required.includes("answer"), true);
+  assert.equal(tool.timeoutMs, DEFAULT_CONFIG.timeoutMs);
+  // defineTool's wrapper enforces the schema before execute runs.
+  const exec = { signal: new AbortController().signal };
+  return assert.rejects(tool.execute({ question: "what is this?" }, exec), /required property "images"/);
+});
+
+test("analyze_image sends the vision completion and returns a text-only answer", async () => {
+  const ref = imageRef("att_fish");
+  const { ctx, calls } = stubCtx({
+    credential: { value: "sk-test", source: "env" },
+    storedImages: { att_fish: PNG_1PX },
+  });
+  const posted = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = visionFetch(posted);
+  try {
+    apply(ctx, {});
+    const tool = calls.tools.get("analyze_image");
+    const value = await tool.execute(
+      { question: "  what species is this? ", images: ["att_fish"] },
+      { signal: new AbortController().signal, agent: stubAgent([ref]) },
+    );
+
+    assert.equal(calls.readImage.length, 1);
+    assert.deepEqual(calls.readImage[0].ref, ref);
+
+    const sent = JSON.parse(posted[0].init.body);
+    assert.equal(sent.model, "gpt-5.6-sol", "defaults to the response model");
+    assert.equal(sent.tools, undefined, "a plain completion carries no tools");
+    assert.equal(sent.tool_choice, undefined);
+    assert.equal(sent.stream, false);
+    assert.deepEqual(sent.input[0].content[0], { type: "input_text", text: "what species is this?" });
+    assert.deepEqual(sent.input[0].content[1], {
+      type: "input_image",
+      image_url: `data:image/png;base64,${PNG_1PX.toString("base64")}`,
+      detail: "auto",
+    });
+
+    assert.equal(value.answer, "It is a red-and-white ranchu goldfish.");
+    assert.equal(value.model, "gpt-5.6-sol");
+    assert.deepEqual(value.sourceImages, ["att_fish"]);
+    assert.equal(value.responseId, "resp_vis");
+
+    // The model-facing result is pure text: safe on any route, no gating needed.
+    const blocks = tool.output.render({ question: "q", images: ["att_fish"] }, value);
+    assert.deepEqual(blocks, [{ type: "text", text: value.answer }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("analyze_image honors a configured visionModel override", async () => {
+  const ref = imageRef("att_fish");
+  const { ctx, calls } = stubCtx({
+    credential: { value: "sk-test", source: "env" },
+    storedImages: { att_fish: PNG_1PX },
+  });
+  const posted = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = visionFetch(posted);
+  try {
+    apply(ctx, { visionModel: "  gpt-4o  " });
+    const value = await calls.tools.get("analyze_image").execute(
+      { question: "what is this?", images: ["att_fish"] },
+      { signal: new AbortController().signal, agent: stubAgent([ref]) },
+    );
+    assert.equal(JSON.parse(posted[0].init.body).model, "gpt-4o");
+    assert.equal(value.model, "gpt-4o");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("analyze_image refuses unknown ids and empty input before any provider call", async () => {
+  const { ctx, calls } = stubCtx({ credential: { value: "sk-test", source: "env" } });
+  let fetched = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetched = true;
+    return new Response("{}", { status: 200 });
+  };
+  try {
+    apply(ctx, {});
+    const tool = calls.tools.get("analyze_image");
+    const signal = new AbortController().signal;
+
+    await assert.rejects(
+      tool.execute({ question: "q", images: ["att_ghost"] }, { signal, agent: stubAgent([]) }),
+      (error) => error.code === "IMAGE_NOT_FOUND" && /att_ghost/.test(error.message),
+    );
+    await assert.rejects(
+      tool.execute({ question: "q", images: [] }, { signal, agent: stubAgent([]) }),
+      (error) => error.code === "MISSING_INPUT",
+    );
+    await assert.rejects(
+      tool.execute({ question: "q", images: ["att_x"] }, { signal }),
+      (error) => error.code === "NO_SESSION",
+    );
+    const many = Array.from({ length: MAX_REFERENCE_IMAGES + 1 }, (_v, i) => `att_${i}`);
+    await assert.rejects(
+      tool.execute({ question: "q", images: many }, { signal, agent: stubAgent([]) }),
+      (error) => error.code === "TOO_MANY_IMAGES",
+    );
+
+    assert.equal(fetched, false, "no request is made for caller errors");
+    assert.equal(calls.credentials.length, 0, "and no credential is resolved");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("analyze_image surfaces provider HTTP failures with the tool label", async () => {
+  const ref = imageRef("att_fish");
+  const { ctx, calls } = stubCtx({
+    credential: { value: "sk-test", source: "env" },
+    storedImages: { att_fish: PNG_1PX },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: "bad key" } }), { status: 401 });
+  try {
+    apply(ctx, {});
+    await assert.rejects(
+      calls.tools.get("analyze_image").execute(
+        { question: "q", images: ["att_fish"] },
+        { signal: new AbortController().signal, agent: stubAgent([ref]) },
+      ),
+      (error) => error.code === "HTTP_ERROR"
+        && /401/.test(error.message)
+        && error.message.includes("bad key")
+        && error.message.startsWith("analyze_image:"),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 //#endregion

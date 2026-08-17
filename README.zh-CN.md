@@ -2,7 +2,7 @@
 
 [English](./README.md)
 
-这是一个 DeepSeek Harness Cordis 插件，通过 Responses API 的 `image_generation` 工具注册 `generate_image`。生成结果会保存为 DSH 持久化 attachment，并由随包提供的 Web Client 视图直接渲染在对话中。
+这是一个 DeepSeek Harness Cordis 插件，通过 Responses API 提供图片工具：`generate_image`（经 `image_generation` 工具的文生图与图生图编辑）和 `analyze_image`（经普通视觉 completion 的图片理解）。生成结果会保存为 DSH 持久化 attachment，并由随包提供的 Web Client 视图直接渲染在对话中。
 
 ## 支持的接口契约
 
@@ -95,6 +95,18 @@ wire 层的变化：工具条目的 `action` 变为 `"edit"`（而非 `"generate
 - id 必须在当前会话自己的日志中可见。参考图字节通过 `attachments.readImage` 读回，而该方法会用存储对象校验完整引用（媒体类型、字节长度、原始宽高），因此仅有 id 无法读取 attachment，编辑范围也被限制在该会话本就能看到的图片内。
 - `input_fidelity` 仅在编辑时有效，不带 `images` 传入会被拒绝。上游支持 `gpt-image-1`/`gpt-image-1.5` 及更新模型，不支持 `gpt-image-1-mini`。
 - 无法解析的 id 会在解析密钥、发起服务商请求之前直接失败。
+
+## 图片理解
+
+```text
+analyze_image(question, images) → answer
+```
+
+`analyze_image` 通过同一个 Responses 端点把对话中的图片交给视觉模型，用自然语言回答问题——描述内容、读取文字、对比、查看细节。它补全了 生成 → 检查 → 编辑 的闭环：纯文本对话模型可以把 `generate_image` 返回的 attachment id 交给它「看」，再根据文字回答发起更准确的编辑。
+
+- 与生成共用 endpoint、凭据和引用解析；模型默认取 `responseModel`，可用 `visionModel` 覆盖。
+- wire 调用是普通 completion（`input_text` + `input_image` 块，不带 `tools`），解析沿用同一套严格封装。
+- 结果是纯文本，对任何对话路由都安全，不需要能力门控。
 
 ## 保存与对话渲染
 

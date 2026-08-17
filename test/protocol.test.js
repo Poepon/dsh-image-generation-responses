@@ -24,7 +24,9 @@ import {
   IMAGE_MEDIA_TYPES,
   ImageGenerationError,
   buildImageGenerationRequest,
+  buildVisionRequest,
   extractGeneratedImage,
+  extractResponseText,
   normalizeResponsesUrl,
   responsesEndpoint,
   toImageDataUrl,
@@ -484,5 +486,90 @@ test("the edit enums match the official surface and stay frozen", () => {
   for (const list of [IMAGE_GENERATION_ACTIONS, IMAGE_INPUT_FIDELITIES, IMAGE_INPUT_DETAILS]) {
     assert.ok(Object.isFrozen(list));
   }
+});
+//#endregion
+
+//#region image understanding (vision) request building and answer extraction
+
+test("buildVisionRequest emits the plain completion wire shape with input_image blocks", () => {
+  const body = buildVisionRequest({
+    question: "  what species is this?  ",
+    responseModel: "gpt-5.6-sol",
+    images: [
+      { mediaType: "image/png", base64: "AAAA" },
+      { fileId: "file_9" },
+    ],
+  });
+  assert.deepEqual(body, {
+    model: "gpt-5.6-sol",
+    input: [{
+      role: "user",
+      content: [
+        { type: "input_text", text: "what species is this?" },
+        { type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "auto" },
+        { type: "input_image", file_id: "file_9", detail: "auto" },
+      ],
+    }],
+    stream: false,
+    store: false,
+  });
+  assert.equal(body.tools, undefined, "no tool entries on a plain completion");
+  assert.equal(body.tool_choice, undefined);
+});
+
+test("buildVisionRequest rejects blank input and empty or malformed images", () => {
+  assert.throws(() => buildVisionRequest({ question: "  ", responseModel: "m", images: [{ fileId: "f" }] }), /question must be a non-empty string/);
+  assert.throws(() => buildVisionRequest({ question: "q", responseModel: " ", images: [{ fileId: "f" }] }), /responseModel must be a non-empty string/);
+  assert.throws(() => buildVisionRequest({ question: "q", responseModel: "m", images: [] }), /images must be a non-empty array/);
+  assert.throws(() => buildVisionRequest({ question: "q", responseModel: "m" }), /images must be a non-empty array/);
+  assert.throws(() => buildVisionRequest({ question: "q", responseModel: "m", images: [{}] }), /images\[0\] must carry one of/);
+});
+
+test("extractResponseText joins output_text blocks and keeps the response id", () => {
+  const payload = {
+    id: "resp_v1",
+    status: "completed",
+    output: [
+      { type: "message", role: "assistant", content: [
+        { type: "output_text", text: "It is a ranchu goldfish." },
+        { type: "output_text", text: "Red and white." },
+      ] },
+    ],
+  };
+  assert.deepEqual(extractResponseText(payload), {
+    text: "It is a ranchu goldfish.\nRed and white.",
+    responseId: "resp_v1",
+  });
+});
+
+test("extractResponseText honors the top-level output_text convenience field", () => {
+  assert.deepEqual(
+    extractResponseText({ id: "r2", output: [], output_text: "  a goldfish  " }),
+    { text: "a goldfish", responseId: "r2" },
+  );
+});
+
+test("extractResponseText surfaces refusals, API errors, and dead responses", () => {
+  assertImageGenerationError(
+    () => extractResponseText({ output: [{ type: "message", content: [{ type: "refusal", refusal: "cannot identify people" }] }] }),
+    "REFUSED",
+  );
+  assertImageGenerationError(
+    () => extractResponseText({ output: [{ type: "refusal", refusal: "no" }] }),
+    "REFUSED",
+  );
+  assertImageGenerationError(
+    () => extractResponseText({ error: { code: "rate_limited", message: "slow down" }, output: [] }),
+    "API_ERROR",
+  );
+  assertImageGenerationError(() => extractResponseText({}), "MISSING_OUTPUT");
+  assertImageGenerationError(() => extractResponseText({ output: [], status: "failed" }), "GENERATION_FAILED");
+  assertImageGenerationError(
+    () => extractResponseText({ output: [], status: "incomplete", incomplete_details: { reason: "max_output_tokens" } }),
+    "INCOMPLETE",
+  );
+  assertImageGenerationError(() => extractResponseText({ output: [{ type: "message", content: [] }] }), "MISSING_OUTPUT");
+  assertImageGenerationError(() => extractResponseText(null), "INVALID_RESPONSE");
+  assertImageGenerationError(() => extractResponseText([]), "INVALID_RESPONSE");
 });
 //#endregion
