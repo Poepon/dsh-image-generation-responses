@@ -123,7 +123,7 @@ It has no menu-bar or sidebar button. The strip appears exactly when the convers
 
 Clicking a thumbnail opens the original-image preview. The strip renders through a `document.body` portal and stacks above that preview, so it stays visible and clickable while a preview is open: clicking another thumbnail switches the preview in place rather than requiring a close first. This portal is required — the `shell.overlay` layer establishes its own stacking context at `z-index: 20`, which would otherwise trap the strip beneath the lightbox's `z-index: 1000`.
 
-The dock collects images from user uploads, assistant image blocks, and tool results (including the presentation-meta fallback used when content blocks were pruned), so it is not limited to images this plugin generated. It is an additive `shell.overlay` list entry addressed by a namespaced id, so no shipped overlay UI is replaced, and it subscribes to the current session's conversation snapshot only while mounted. It measures the sidebar column so it stays flush against the conversation column across collapse and drag.
+The dock collects only model-returned images — assistant output blocks and tool results (including the presentation-meta fallback used when content blocks were pruned). User uploads, steering messages, and context injections are deliberately excluded. It is an additive `shell.overlay` list entry addressed by a namespaced id, so no shipped overlay UI is replaced, and it subscribes to the current session's conversation snapshot only while mounted. It measures the sidebar column so it stays flush against the conversation column across collapse and drag.
 
 ## Errors and limits
 

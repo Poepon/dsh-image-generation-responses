@@ -351,31 +351,44 @@ function ref(id) {
   return { attachmentId: id, mediaType: "image/png", bytes: 16, width: 8, height: 8, name: `${id}.png` };
 }
 
-test("the session gallery collects images newest first across every node shape", () => {
+test("the session gallery keeps only model-returned images, newest first", () => {
   const snapshot = {
     nodes: [
       { kind: "user", seq: 1, content: [{ type: "image", attachment: ref("up_1") }, { type: "text", text: "hi" }] },
-      { kind: "assistant", seq: 2, blocks: [{ kind: "text", text: "ok" }, { kind: "image", attachment: ref("as_1") }] },
-      settled({ seq: 3, content: [{ type: "image", attachment: ref("gen_1") }], meta: { attachment: ref("gen_1") } }),
-      { kind: "tool-result", seq: 4, content: [{ type: "text", text: "pruned" }], meta: { attachment: ref("gen_2") } },
+      { kind: "steering", seq: 2, content: [{ type: "image", attachment: ref("steer_1") }] },
+      { kind: "context", seq: 3, content: [{ type: "image", attachment: ref("ctx_1") }] },
+      { kind: "assistant", seq: 4, blocks: [{ kind: "text", text: "ok" }, { kind: "image", attachment: ref("as_1") }] },
+      settled({ seq: 5, content: [{ type: "image", attachment: ref("gen_1") }], meta: { attachment: ref("gen_1") } }),
+      { kind: "tool-result", seq: 6, content: [{ type: "text", text: "pruned" }], meta: { attachment: ref("gen_2") } },
     ],
   };
 
   assert.deepEqual(
     client.collectSessionImages(snapshot).map((item) => item.attachment.attachmentId),
-    ["gen_2", "gen_1", "as_1", "up_1"],
-    "newest node first, and the meta fallback still contributes",
+    ["gen_2", "gen_1", "as_1"],
+    "assistant output and tool results survive; human-sent and injected images do not",
   );
+});
+
+test("a user node cannot smuggle an image through the meta fallback", () => {
+  const snapshot = {
+    nodes: [
+      { kind: "user", seq: 1, content: [], meta: { attachment: ref("sneaky") } },
+      { kind: "user", seq: 2, content: [{ type: "image", attachment: ref("up_2") }] },
+    ],
+  };
+  assert.deepEqual(client.collectSessionImages(snapshot), []);
 });
 
 test("the session gallery deduplicates by attachment id and tolerates unknown nodes", () => {
   const snapshot = {
     nodes: [
-      { kind: "user", seq: 1, content: [{ type: "image", attachment: ref("dup") }] },
+      { kind: "user", seq: 1, content: [{ type: "image", attachment: ref("up_only") }] },
       { kind: "future-kind", seq: 2, surface: "unknown" },
       null,
       { kind: "assistant", seq: 3, blocks: [{ kind: "image", attachment: ref("dup") }] },
-      { kind: "assistant", seq: 4, blocks: [{ kind: "image", attachment: { attachmentId: "bad", width: 0, height: 1, mediaType: "image/png" } }] },
+      { kind: "tool-result", seq: 4, content: [{ type: "image", attachment: ref("dup") }] },
+      { kind: "assistant", seq: 5, blocks: [{ kind: "image", attachment: { attachmentId: "bad", width: 0, height: 1, mediaType: "image/png" } }] },
     ],
   };
 
@@ -394,10 +407,10 @@ test("sameImages keeps the projection identity stable across snapshot flushes", 
 /** Build a session double whose snapshot holds the given images, newest last. */
 function sessionWith(ids) {
   const snapshot = {
-    nodes: ids.map((id, seq) => ({
-      kind: "user",
+    nodes: ids.map((id, seq) => settled({
       seq: seq + 1,
       content: [{ type: "image", attachment: ref(id) }],
+      meta: undefined,
     })),
   };
   let listener;
