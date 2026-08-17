@@ -74,10 +74,27 @@ After first installing this package, restart the running DSH process and refresh
 ## Tool
 
 ```text
-generate_image(prompt, size?, quality?, background?, format?)
+generate_image(prompt, images?, input_fidelity?, size?, quality?, background?, format?)
 ```
 
-The tool returns canonical JSON metadata including the durable attachment reference, model names, generation options, and provider IDs when present. Its model-facing rendering contains a text summary and an `image` ContentBlock.
+The tool returns canonical JSON metadata including the durable attachment reference, model names, generation options, the resolved `action`, and provider IDs when present. Its model-facing rendering contains a text summary and an `image` ContentBlock.
+
+### Image-to-image (editing)
+
+Passing `images` — attachment ids of images already present in the conversation — turns the call into editing instead of generating from scratch. `prompt` is then the edit instruction.
+
+```text
+generate_image(prompt: "make it night", images: ["att_..."], input_fidelity: "high")
+```
+
+What changes on the wire: the tool entry carries `action: "edit"` (instead of `"generate"`), optionally `input_fidelity`, and `input` becomes a message array holding an `input_text` block followed by one `input_image` block per reference image. With no `images`, the request is byte-for-byte the text-to-image shape.
+
+Constraints worth knowing:
+
+- Up to 8 reference images per call.
+- Ids must be visible in the calling session's own log. The referenced bytes are read back through `attachments.readImage`, which verifies the complete reference (media type, byte length, and intrinsic dimensions) against the stored object — so an id alone cannot be used to read an attachment, and editing is confined to images that session can already see.
+- `input_fidelity` is edit-only; requesting it without `images` is rejected. Upstream supports it on `gpt-image-1`/`gpt-image-1.5` and later, and not on `gpt-image-1-mini`.
+- An unresolvable id fails before any credential is resolved or provider call is made.
 
 ## Storage and conversation rendering
 

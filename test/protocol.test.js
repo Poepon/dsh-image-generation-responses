@@ -14,16 +14,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   FORMAT_MEDIA_TYPES,
+  IMAGE_GENERATION_ACTIONS,
   IMAGE_GENERATION_BACKGROUNDS,
   IMAGE_GENERATION_FORMATS,
   IMAGE_GENERATION_QUALITIES,
   IMAGE_GENERATION_SIZES,
+  IMAGE_INPUT_DETAILS,
+  IMAGE_INPUT_FIDELITIES,
   IMAGE_MEDIA_TYPES,
   ImageGenerationError,
   buildImageGenerationRequest,
   extractGeneratedImage,
   normalizeResponsesUrl,
   responsesEndpoint,
+  toImageDataUrl,
 } from "../lib/protocol.js";
 
 /** A tiny valid 1x1 PNG byte payload for decoding tests. */
@@ -337,3 +341,148 @@ test("IMAGE_MEDIA_TYPES and the generation enums cover the official surface", ()
     assert.ok(Object.isFrozen(list));
   }
 });
+
+//#region image-to-image (edit) request building
+
+test("supplying images switches the request to action edit with an input message array", () => {
+  const body = buildImageGenerationRequest({
+    prompt: "  make it snow  ",
+    responseModel: "gpt-5.6-sol",
+    imageModel: "gpt-image-2",
+    images: [
+      { mediaType: "image/png", base64: "AAAA" },
+      { mediaType: "image/webp", base64: "BBBB", detail: "high" },
+    ],
+  });
+  assert.deepEqual(body.tools, [{ type: "image_generation", action: "edit", model: "gpt-image-2" }]);
+  assert.equal(body.stream, false);
+  assert.deepEqual(body.tool_choice, { type: "image_generation" });
+  assert.deepEqual(body.input, [{
+    role: "user",
+    content: [
+      { type: "input_text", text: "make it snow" },
+      { type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "auto" },
+      { type: "input_image", image_url: "data:image/webp;base64,BBBB", detail: "high" },
+    ],
+  }]);
+});
+
+test("a reference image may be a file id or an already-qualified url", () => {
+  const body = buildImageGenerationRequest({
+    prompt: "combine",
+    responseModel: "m",
+    images: [{ fileId: " file_123 " }, { imageUrl: " https://cdn.example/a.png " }],
+  });
+  assert.deepEqual(body.input[0].content.slice(1), [
+    { type: "input_image", file_id: "file_123", detail: "auto" },
+    { type: "input_image", image_url: "https://cdn.example/a.png", detail: "auto" },
+  ]);
+});
+
+test("edit-only options ride the tool entry and are rejected without images", () => {
+  const withMask = buildImageGenerationRequest({
+    prompt: "inpaint",
+    responseModel: "m",
+    images: [{ mediaType: "image/png", base64: "AAAA" }],
+    inputFidelity: "high",
+    mask: { mediaType: "image/png", base64: "MMMM" },
+  });
+  assert.equal(withMask.tools[0].input_fidelity, "high");
+  assert.deepEqual(withMask.tools[0].input_image_mask, { image_url: "data:image/png;base64,MMMM" });
+
+  const maskById = buildImageGenerationRequest({
+    prompt: "inpaint",
+    responseModel: "m",
+    images: [{ fileId: "f1" }],
+    mask: { fileId: "mask_1" },
+  });
+  assert.deepEqual(maskById.tools[0].input_image_mask, { file_id: "mask_1" });
+
+  assert.throws(
+    () => buildImageGenerationRequest({ prompt: "x", responseModel: "m", inputFidelity: "high" }),
+    /input_fidelity applies only to an edit/,
+  );
+  assert.throws(
+    () => buildImageGenerationRequest({ prompt: "x", responseModel: "m", mask: { fileId: "m1" } }),
+    /input_image_mask applies only to an edit/,
+  );
+  assert.throws(
+    () => buildImageGenerationRequest({ prompt: "x", responseModel: "m", action: "edit" }),
+    /action "edit" requires at least one reference image/,
+  );
+});
+
+test("an explicit action overrides the images-derived default", () => {
+  const auto = buildImageGenerationRequest({
+    prompt: "x",
+    responseModel: "m",
+    images: [{ fileId: "f1" }],
+    action: "auto",
+  });
+  assert.equal(auto.tools[0].action, "auto");
+  assert.equal(Array.isArray(auto.input), true, "the reference still travels in the message array");
+
+  assert.throws(
+    () => buildImageGenerationRequest({ prompt: "x", responseModel: "m", action: "sideways" }),
+    /invalid image_generation action "sideways"/,
+  );
+});
+
+test("malformed reference images and masks are rejected", () => {
+  assert.throws(
+    () => buildImageGenerationRequest({ prompt: "x", responseModel: "m", images: "att_1" }),
+    /images must be an array when provided/,
+  );
+  assert.throws(
+    () => buildImageGenerationRequest({ prompt: "x", responseModel: "m", images: [null] }),
+    /images\[0\] must be an object/,
+  );
+  assert.throws(
+    () => buildImageGenerationRequest({ prompt: "x", responseModel: "m", images: [{}] }),
+    /images\[0\] must carry one of fileId, imageUrl, or mediaType \+ base64/,
+  );
+  assert.throws(
+    () => buildImageGenerationRequest({
+      prompt: "x",
+      responseModel: "m",
+      images: [{ mediaType: "image/png", base64: "AA", detail: "ultra" }],
+    }),
+    /invalid image_generation detail "ultra"/,
+  );
+  assert.throws(
+    () => buildImageGenerationRequest({
+      prompt: "x",
+      responseModel: "m",
+      images: [{ fileId: "f1" }],
+      inputFidelity: "medium",
+    }),
+    /invalid image_generation input_fidelity "medium"/,
+  );
+  assert.throws(
+    () => buildImageGenerationRequest({ prompt: "x", responseModel: "m", images: [{ fileId: "f" }], mask: {} }),
+    /mask must carry one of fileId, imageUrl, or mediaType \+ base64/,
+  );
+});
+
+test("an empty images array stays text-to-image", () => {
+  const body = buildImageGenerationRequest({ prompt: "a cat", responseModel: "m", images: [] });
+  assert.equal(body.input, "a cat");
+  assert.equal(body.tools[0].action, "generate");
+});
+
+test("toImageDataUrl builds an RFC 2397 payload and rejects blanks", () => {
+  assert.equal(toImageDataUrl("image/png", "AAAA"), "data:image/png;base64,AAAA");
+  assert.equal(toImageDataUrl(" image/webp ", " BBBB "), "data:image/webp;base64,BBBB");
+  assert.throws(() => toImageDataUrl("", "AAAA"), /mediaType must be a non-empty string/);
+  assert.throws(() => toImageDataUrl("image/png", "  "), /base64 must be a non-empty string/);
+});
+
+test("the edit enums match the official surface and stay frozen", () => {
+  assert.deepEqual([...IMAGE_GENERATION_ACTIONS], ["generate", "edit", "auto"]);
+  assert.deepEqual([...IMAGE_INPUT_FIDELITIES], ["high", "low"]);
+  assert.deepEqual([...IMAGE_INPUT_DETAILS], ["low", "high", "auto", "original"]);
+  for (const list of [IMAGE_GENERATION_ACTIONS, IMAGE_INPUT_FIDELITIES, IMAGE_INPUT_DETAILS]) {
+    assert.ok(Object.isFrozen(list));
+  }
+});
+//#endregion

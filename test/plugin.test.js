@@ -12,8 +12,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFAULT_CONFIG,
+  MAX_REFERENCE_IMAGES,
   apply,
   buildImageGenerationRequest,
+  indexSessionImages,
   name,
   inject,
 } from "../lib/index.js";
@@ -25,8 +27,8 @@ const PNG_1PX = Buffer.from(
 );
 
 /** A stub harness context: tools registry, per-call credential, attachment seam. */
-function stubCtx({ credential } = {}) {
-  const calls = { credentials: [], saveImage: [], registered: null };
+function stubCtx({ credential, storedImages = {} } = {}) {
+  const calls = { credentials: [], saveImage: [], readImage: [], registered: null };
   const ctx = {
     tools: {
       register: (definition) => {
@@ -51,9 +53,41 @@ function stubCtx({ credential } = {}) {
           name: input.name,
         };
       },
+      readImage: async (ref, signal) => {
+        calls.readImage.push({ ref, signal });
+        const hit = storedImages[ref.attachmentId];
+        if (hit === undefined) throw new Error("ATTACHMENT_NOT_FOUND");
+        return { ref, data: hit };
+      },
     },
   };
   return { ctx, calls };
+}
+
+/**
+ * A stub calling agent whose session log carries the given image references, in
+ * the same leaf shapes the real durable log uses.
+ */
+function stubAgent(refs) {
+  return {
+    session: {
+      events: [
+        { type: "user/message", data: { content: refs.map((ref) => ({ type: "image", attachment: ref })) } },
+      ],
+    },
+  };
+}
+
+/** A complete durable image reference as the attachment service mints them. */
+function imageRef(id, overrides = {}) {
+  return {
+    attachmentId: id,
+    mediaType: "image/png",
+    bytes: PNG_1PX.length,
+    width: 1,
+    height: 1,
+    ...overrides,
+  };
 }
 
 test("module metadata and defaults match the official configuration", () => {
@@ -211,3 +245,199 @@ test("generate_image fails cleanly when the credential is unconfigured", async (
     globalThis.fetch = originalFetch;
   }
 });
+
+//#region image-to-image editing
+
+/** Mock a single successful generation response carrying the 1x1 PNG. */
+function okFetch(posted) {
+  return async (url, init) => {
+    posted.push({ url, init });
+    const body = JSON.stringify({
+      id: "resp_edit",
+      status: "completed",
+      output: [{ id: "call_e", type: "image_generation_call", status: "completed", result: PNG_1PX.toString("base64") }],
+    });
+    return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  };
+}
+
+test("the tool advertises the image-to-image parameters and edit output fields", () => {
+  const { ctx, calls } = stubCtx();
+  apply(ctx, {});
+  const tool = calls.registered;
+
+  assert.equal(tool.parameters.properties.images.type, "array");
+  assert.equal(tool.parameters.properties.images.items.type, "string");
+  assert.deepEqual(tool.parameters.properties.input_fidelity.enum, ["high", "low"]);
+  // Editing stays opt-in: only `prompt` is ever required.
+  assert.deepEqual(tool.parameters.required, ["prompt"]);
+  assert.ok(tool.output.schema.required.includes("action"));
+  assert.equal(tool.output.schema.properties.sourceImages.type, "array");
+  assert.equal(tool.output.schema.properties.inputFidelity.type, "string");
+});
+
+test("generate_image edits a session image, sending action edit with the reference bytes", async () => {
+  const ref = imageRef("att_src");
+  const { ctx, calls } = stubCtx({
+    credential: { value: "sk-test", source: "env" },
+    storedImages: { att_src: PNG_1PX },
+  });
+  const posted = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = okFetch(posted);
+  try {
+    apply(ctx, {});
+    const tool = calls.registered;
+    const value = await tool.execute(
+      { prompt: "make it night", images: ["att_src"], input_fidelity: "high" },
+      { signal: new AbortController().signal, agent: stubAgent([ref]) },
+    );
+
+    // The reference was read back through the attachment seam with the FULL
+    // reference recovered from the session log, not a bare id.
+    assert.equal(calls.readImage.length, 1);
+    assert.deepEqual(calls.readImage[0].ref, ref);
+
+    const sent = JSON.parse(posted[0].init.body);
+    assert.equal(sent.tools[0].action, "edit");
+    assert.equal(sent.tools[0].input_fidelity, "high");
+    // Editing switches `input` from a bare string to a message array.
+    assert.equal(Array.isArray(sent.input), true);
+    assert.equal(sent.input[0].role, "user");
+    assert.deepEqual(sent.input[0].content[0], { type: "input_text", text: "make it night" });
+    assert.deepEqual(sent.input[0].content[1], {
+      type: "input_image",
+      image_url: `data:image/png;base64,${PNG_1PX.toString("base64")}`,
+      detail: "auto",
+    });
+
+    assert.equal(value.action, "edit");
+    assert.deepEqual(value.sourceImages, ["att_src"]);
+    assert.equal(value.inputFidelity, "high");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("omitting images keeps the byte-identical text-to-image request", async () => {
+  const { ctx, calls } = stubCtx({ credential: { value: "sk-test", source: "env" } });
+  const posted = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = okFetch(posted);
+  try {
+    apply(ctx, {});
+    const tool = calls.registered;
+    const value = await tool.execute({ prompt: "a cat" }, { signal: new AbortController().signal });
+    const sent = JSON.parse(posted[0].init.body);
+    assert.equal(sent.input, "a cat", "no reference images means the bare-string input");
+    assert.equal(sent.tools[0].action, "generate");
+    assert.equal(sent.tools[0].input_fidelity, undefined);
+    assert.equal(calls.readImage.length, 0, "nothing is read from the attachment seam");
+    assert.equal(value.action, "generate");
+    assert.equal(value.sourceImages, undefined);
+    assert.equal(value.inputFidelity, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an attachment id outside the conversation is refused before any provider call", async () => {
+  const { ctx, calls } = stubCtx({
+    credential: { value: "sk-test", source: "env" },
+    storedImages: { att_other: PNG_1PX },
+  });
+  let fetched = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetched = true;
+    return new Response("{}", { status: 200 });
+  };
+  try {
+    apply(ctx, {});
+    const tool = calls.registered;
+    await assert.rejects(
+      tool.execute(
+        { prompt: "edit", images: ["att_other"] },
+        { signal: new AbortController().signal, agent: stubAgent([imageRef("att_visible")]) },
+      ),
+      (error) => error.code === "IMAGE_NOT_FOUND" && /att_other/.test(error.message),
+    );
+    assert.equal(fetched, false, "an unresolvable id never reaches the provider");
+    assert.equal(calls.readImage.length, 0);
+    assert.equal(calls.credentials.length, 0, "and never spends a credential");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("editing without a calling session, over the cap, or on a broken object fails cleanly", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("{}", { status: 200 });
+  try {
+    // No agent: there is no session to resolve ids against.
+    {
+      const { ctx, calls } = stubCtx({ credential: { value: "sk", source: "env" } });
+      apply(ctx, {});
+      await assert.rejects(
+        calls.registered.execute(
+          { prompt: "edit", images: ["att_src"] },
+          { signal: new AbortController().signal },
+        ),
+        (error) => error.code === "NO_SESSION",
+      );
+    }
+    // Over the reference cap.
+    {
+      const { ctx, calls } = stubCtx({ credential: { value: "sk", source: "env" } });
+      apply(ctx, {});
+      const many = Array.from({ length: MAX_REFERENCE_IMAGES + 1 }, (_v, i) => `att_${i}`);
+      await assert.rejects(
+        calls.registered.execute(
+          { prompt: "edit", images: many },
+          { signal: new AbortController().signal, agent: stubAgent([]) },
+        ),
+        (error) => error.code === "TOO_MANY_IMAGES",
+      );
+    }
+    // Visible in the log, but the stored object cannot be read.
+    {
+      const ref = imageRef("att_gone");
+      const { ctx, calls } = stubCtx({ credential: { value: "sk", source: "env" }, storedImages: {} });
+      apply(ctx, {});
+      await assert.rejects(
+        calls.registered.execute(
+          { prompt: "edit", images: ["att_gone"] },
+          { signal: new AbortController().signal, agent: stubAgent([ref]) },
+        ),
+        (error) => error.code === "IMAGE_READ_FAILED" && /att_gone/.test(error.message),
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("indexSessionImages reads every durable image shape and ignores junk", () => {
+  const a = imageRef("a");
+  const b = imageRef("b");
+  const c = imageRef("c");
+  const session = {
+    events: [
+      { type: "user/message", data: { content: [{ type: "image", attachment: a }, { type: "text", text: "hi" }] } },
+      { type: "assistant/message", data: { message: { content: [{ type: "image", attachment: b }] } } },
+      { type: "tool/result", data: { meta: { attachment: c } } },
+      { type: "unknown/shape", data: { nothing: true } },
+      { type: "broken", data: null },
+      { type: "partial", data: { content: [{ type: "image", attachment: { attachmentId: "bad" } }] } },
+      null,
+    ],
+  };
+  const index = indexSessionImages(session);
+  assert.deepEqual([...index.keys()].sort(), ["a", "b", "c"]);
+  assert.deepEqual(index.get("a"), a);
+  assert.deepEqual(index.get("c"), c);
+  assert.equal(index.has("bad"), false, "an incomplete reference is unusable and dropped");
+  assert.equal(indexSessionImages(undefined).size, 0);
+  assert.equal(indexSessionImages({}).size, 0);
+});
+//#endregion

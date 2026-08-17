@@ -74,10 +74,27 @@ API Key 应通过 DSH credentials 服务或环境变量提供。不要把真实�
 ## 工具
 
 ```text
-generate_image(prompt, size?, quality?, background?, format?)
+generate_image(prompt, images?, input_fidelity?, size?, quality?, background?, format?)
 ```
 
-返回值包含持久化 attachment 引用、模型名、生成参数，以及服务端提供的调用 ID。模型侧内容由文字摘要和 `image` ContentBlock 组成。
+返回值包含持久化 attachment 引用、模型名、生成参数、实际使用的 `action`，以及服务端提供的调用 ID。模型侧内容由文字摘要和 `image` ContentBlock 组成。
+
+### 图生图（图片编辑）
+
+传入 `images`（当前对话中已有图片的 attachment id）即切换为编辑模式，而非从零生成。此时 `prompt` 表示编辑指令。
+
+```text
+generate_image(prompt: "改成夜景", images: ["att_..."], input_fidelity: "high")
+```
+
+wire 层的变化：工具条目的 `action` 变为 `"edit"`（而非 `"generate"`），可选携带 `input_fidelity`；`input` 由字符串变为消息数组，内含一个 `input_text` 块和每张参考图对应的 `input_image` 块。不传 `images` 时，请求与原本的文生图形状完全一致。
+
+需要注意的约束：
+
+- 每次调用最多 8 张参考图。
+- id 必须在当前会话自己的日志中可见。参考图字节通过 `attachments.readImage` 读回，而该方法会用存储对象校验完整引用（媒体类型、字节长度、原始宽高），因此仅有 id 无法读取 attachment，编辑范围也被限制在该会话本就能看到的图片内。
+- `input_fidelity` 仅在编辑时有效，不带 `images` 传入会被拒绝。上游支持 `gpt-image-1`/`gpt-image-1.5` 及更新模型，不支持 `gpt-image-1-mini`。
+- 无法解析的 id 会在解析密钥、发起服务商请求之前直接失败。
 
 ## 保存与对话渲染
 
