@@ -125,6 +125,10 @@ Clicking a thumbnail opens the original-image preview. The strip renders through
 
 The dock collects only model-returned images — assistant output blocks and tool results (including the presentation-meta fallback used when content blocks were pruned). User uploads, steering messages, and context injections are deliberately excluded. It is an additive `shell.overlay` list entry addressed by a namespaced id, so no shipped overlay UI is replaced, and it subscribes to the current session's conversation snapshot only while mounted. It measures the sidebar column so it stays flush against the conversation column across collapse and drag.
 
+## Localization
+
+Every user-facing string in the web client — the tool row, the dock, and the gallery/lightbox affordances — is localized through the shell's locale service (`zh` and `en`, following the active language and its switcher; English is the fallback when the locale seat is absent). Model-facing text (tool descriptions, result summaries, error messages) intentionally stays English.
+
 ## Errors and limits
 
 Failures use stable `ImageGenerationError.code` values such as `MISSING_CREDENTIAL`, `HTTP_ERROR`, `TIMEOUT`, `BAD_BASE64`, `OVERSIZED`, `REFUSED`, and `MISSING_OUTPUT`. Responses and decoded images are bounded. Remote image URLs and HTTP redirects are rejected.

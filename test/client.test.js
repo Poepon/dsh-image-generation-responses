@@ -185,18 +185,25 @@ function settled(overrides = {}) {
 
 test("the bundle exports the client plugin contract", () => {
   assert.equal(typeof client.apply, "function");
-  assert.deepEqual(client.inject, ["slots", "conversation", "sessions"]);
+  assert.deepEqual(client.inject, ["slots", "conversation", "sessions", "locale"]);
 });
 
-test("apply claims the generate_image key of tool.call.toolview and unwinds with the fiber", () => {
+/** A stub ctx covering every service apply touches, recording the calls. */
+function stubApplyCtx() {
   const registrations = [];
   const injections = [];
-  let disposed = 0;
   const effects = [];
+  const dictionaries = [];
   const ctx = {
     get: () => undefined,
     effect: (fn) => {
       effects.push(fn());
+    },
+    locale: {
+      register: (ns, dicts) => {
+        dictionaries.push({ ns, dicts });
+        return () => {};
+      },
     },
     slots: {
       inject: (name, body) => {
@@ -205,12 +212,15 @@ test("apply claims the generate_image key of tool.call.toolview and unwinds with
       },
       register: (options, component) => {
         registrations.push({ options, component });
-        return () => {
-          disposed += 1;
-        };
+        return () => {};
       },
     },
   };
+  return { ctx, registrations, injections, effects, dictionaries };
+}
+
+test("apply claims the generate_image key of tool.call.toolview and unwinds with the fiber", () => {
+  const { ctx, registrations, injections, effects, dictionaries } = stubApplyCtx();
 
   client.apply(ctx);
 
@@ -218,23 +228,33 @@ test("apply claims the generate_image key of tool.call.toolview and unwinds with
   assert.equal(registrations.length, 2, "the dock needs no menu-bar action button");
   assert.equal(registrations[0].options.name, "tool.call.toolview");
   assert.equal(registrations[0].options.key, "generate_image");
+  assert.equal(registrations[0].options.locale, "dsh-image-generation-responses");
   assert.equal(typeof registrations[0].component, "function");
 
   // The dock is an additive list entry addressed by a namespaced id, so no
   // shipped overlay occupant is replaced.
   assert.equal(registrations[1].options.name, "shell.overlay");
   assert.equal(registrations[1].options.id, "dsh-image-generation-responses/gallery-panel");
+  assert.equal(registrations[1].options.locale, "dsh-image-generation-responses");
   assert.equal(registrations[1].options.key, undefined);
   assert.ok(
     !injections.includes("sidebar.footer.action"),
     "the sidebar footer seat is no longer occupied",
   );
 
+  // Both UI dictionaries register under the plugin namespace.
+  assert.equal(dictionaries.length, 1);
+  assert.equal(dictionaries[0].ns, "dsh-image-generation-responses");
+  assert.deepEqual(
+    Object.keys(dictionaries[0].dicts.zh).sort(),
+    Object.keys(dictionaries[0].dicts.en).sort(),
+    "zh and en carry exactly the same keys",
+  );
+
   // Every side effect is reversible through the fiber's disposers.
-  assert.equal(effects.length, 1);
+  assert.equal(effects.length, 2, "image loaders + dictionaries");
   assert.equal(typeof effects[0], "function");
   effects[0]();
-  assert.equal(disposed, 0, "the effect disposer is independent of the slot disposer");
 });
 
 test("the session image loader is stable per session and routes through conversation.resolveImage", async () => {
@@ -249,6 +269,7 @@ test("the session image loader is stable per session and routes through conversa
   const ctx = {
     get: (name) => (name === "conversation" ? conversation : undefined),
     effect: (fn) => fn(),
+    locale: { register: () => () => {} },
     slots: {
       inject: (_name, body) => body(),
       register: (options, component) => {
@@ -284,7 +305,7 @@ test("a still-running call renders the running state", () => {
   };
   const described = client.describeState(running);
   assert.equal(described.state, "running");
-  assert.equal(described.summary, "Generating image…");
+  assert.equal(described.summary, undefined, "static strings are translated by the row, not the pure model");
   assert.deepEqual(client.selectImages(running), [], "a running call has no durable image yet");
 });
 
@@ -561,5 +582,93 @@ test("the dock degrades when the portal or document is unavailable", () => {
   const bare = render(Dock, props);
   assert.equal(bare.tree, null);
   bare.unmount();
+});
+//#endregion
+
+//#region i18n
+
+/** A translator backed by the plugin's own zh dictionary, with interpolation. */
+function zhT(key, params) {
+  const template = client.DICT_ZH[key];
+  if (typeof template !== "string") return key;
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match));
+}
+
+test("the zh and en dictionaries carry identical, non-empty keys", () => {
+  const zhKeys = Object.keys(client.DICT_ZH).sort();
+  const enKeys = Object.keys(client.DICT_EN).sort();
+  assert.deepEqual(zhKeys, enKeys);
+  assert.ok(zhKeys.length > 0);
+  for (const key of zhKeys) {
+    assert.ok(client.DICT_ZH[key].trim().length > 0, `zh "${key}" is blank`);
+    assert.ok(client.DICT_EN[key].trim().length > 0, `en "${key}" is blank`);
+  }
+});
+
+test("defaultT renders the English fallback and interpolates placeholders", () => {
+  assert.equal(client.defaultT("row.running"), "Generating image…");
+  assert.equal(client.defaultT("label.openNamed", { label: "panda.png" }), "Open the original image: panda.png");
+  assert.equal(client.defaultT("missing.key"), "missing.key", "unknown keys degrade to the key itself");
+});
+
+test("the tool row translates its static strings through the t seat", () => {
+  const Row = client.makeImageRow(() => () => Promise.resolve("blob:x"));
+
+  const ready = Row({ block: settled(), sessionId: "s1", t: zhT });
+  const title = ready.children
+    .find((child) => child.props.className === "dsh-igr-row")
+    .children.find((child) => child.props.className === "dsh-igr-title");
+  assert.equal(title.children, "图像");
+
+  const running = Row({
+    block: { callId: "c", name: "generate_image", argsRaw: "{}", turn: 1, step: 1, time: 0, callView: null, subCalls: [] },
+    sessionId: "s1",
+    t: zhT,
+  });
+  const runningSummary = running.children
+    .find((child) => child.props.className === "dsh-igr-row")
+    .children.find((child) => child.props.className === "dsh-igr-summary");
+  assert.equal(runningSummary.children, "正在生成图像…");
+
+  const empty = Row({
+    block: settled({ content: [{ type: "text", text: "ok" }], meta: undefined }),
+    sessionId: "s1",
+    t: zhT,
+  });
+  const note = empty.children
+    .find((child) => child.props.className === "dsh-igr-body")
+    .children;
+  assert.equal(note.children, "调用成功，但没有返回已保存的图像附件。");
+
+  // Without a t seat the row falls back to English.
+  const bare = Row({ block: settled(), sessionId: "s1" });
+  const bareTitle = bare.children
+    .find((child) => child.props.className === "dsh-igr-row")
+    .children.find((child) => child.props.className === "dsh-igr-title");
+  assert.equal(bareTitle.children, "Image");
+});
+
+test("the dock translates its aria label, tile affordances, and pending text", async () => {
+  const live = sessionWith(["a1"]);
+  const sessions = { binding: () => ({ sessionId: "s1", session: live.face }) };
+  const pendingLoad = () => new Promise(() => {});
+  const Dock = client.makeGalleryPanel(() => pendingLoad, () => sessions);
+
+  global.document = { body: {}, querySelector: () => null };
+  try {
+    const view = render(Dock, { useSessions: (select) => select({ current: "s1" }), t: zhT });
+    await flush();
+    const tree = view.rerender();
+    const dock = tree.children.find((child) => child.props.className === "dsh-igr-dock");
+    assert.equal(dock.props["aria-label"], "会话图片");
+    const tile = dock.children[0];
+    assert.equal(tile.props.title, "查看原图");
+    assert.equal(tile.children.props.className, "dsh-igr-thumb-pending");
+    assert.equal(tile.children.children, "图片加载中…");
+    view.unmount();
+  } finally {
+    delete global.document;
+  }
 });
 //#endregion

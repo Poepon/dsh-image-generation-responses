@@ -124,6 +124,10 @@ Client half 还提供会话图片侧栏：当前会话的全部持久化图片�
 
 侧栏只收集模型返回的图片——assistant 输出块和工具结果（包括内容块被裁剪时使用的 presentation meta 回退）；用户上传、steering 消息和 context 注入的图片会被刻意排除。它是使用命名空间 id 的可叠加 `shell.overlay` list 条目，不会替换任何随 DSH 发布的浮层 UI，且仅在挂载期间订阅当前会话的对话快照。它会测量侧边栏列宽，使其在侧边栏收起与拖动改变宽度时始终贴合对话列。
 
+## 多语言
+
+Web Client 的全部用户可见文案——工具行、图片侧栏、画廊与原图预览——都通过 shell 的 locale 服务本地化（`zh` 与 `en`，跟随当前语言及设置中的语言切换；locale 缺席时回退英文）。模型面文本（工具描述、结果摘要、错误消息）刻意保持英文。
+
 ## 错误与限制
 
 错误使用稳定的 `ImageGenerationError.code`，包括 `MISSING_CREDENTIAL`、`HTTP_ERROR`、`TIMEOUT`、`BAD_BASE64`、`OVERSIZED`、`REFUSED` 和 `MISSING_OUTPUT`。响应与图片大小有明确上限；远程图片 URL 和 HTTP redirect 会被拒绝。
