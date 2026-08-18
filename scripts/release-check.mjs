@@ -29,6 +29,13 @@ if (packageJson.repository?.url !== "git+https://github.com/Poepon/dsh-image-gen
 if (!Array.isArray(packageJson.files) || packageJson.files.length !== 1 || packageJson.files[0] !== "lib") {
   throw new Error("npm files allowlist must contain only lib");
 }
+// DSH host packages are provided by the harness at runtime; declaring them as
+// runtime dependencies would let npm nest a copy that shadows the host's.
+for (const name of Object.keys(packageJson.dependencies ?? {})) {
+  if (name.startsWith("@deepseek-ai/")) {
+    throw new Error(`host platform package ${name} must not be a runtime dependency (use peerDependencies)`);
+  }
+}
 
 const ignored = new Set(["node_modules", ".git"]);
 const forbidden = [/ai\.yaspost\.com/i, /GPT_API_KEY/, /Bearer\s+sk-[A-Za-z0-9_-]{12,}/];

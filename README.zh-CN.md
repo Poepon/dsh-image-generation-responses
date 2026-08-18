@@ -149,6 +149,8 @@ npm pack --dry-run
 
 React、React DOM 与 `@deepseek-ai/dsh-client-ui-attachment` 标记为 optional npm peer，是因为受支持的 DSH Web Shell 会将它们作为平台 seed module 提供；不支持脱离 DSH Shell 单独加载这个 Client half。
 
+本插件引用的 DSH 宿主平台包（`@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-credentials`、`@deepseek-ai/dsh-llm`）声明为非 optional 的 npm peer——绝不放进 `dependencies`，避免安装时在插件目录嵌套副本遮蔽宿主自身版本。它们同时镜像在 `devDependencies` 中，供本地开发与 CI 跑测试。
+
 安全问题请查看 [SECURITY.md](./SECURITY.md)，贡献流程请查看 [CONTRIBUTING.md](./CONTRIBUTING.md)，维护者发布清单请查看 [RELEASING.md](./RELEASING.md)。
 
 ## 许可证

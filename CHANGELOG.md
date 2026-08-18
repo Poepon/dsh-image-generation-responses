@@ -6,6 +6,7 @@ All notable changes to this project are documented here. This project follows Se
 
 ### Fixed
 
+- The DSH host platform packages (`dsh-tools`, `dsh-credentials`, `dsh-llm`) moved from runtime `dependencies` to non-optional `peerDependencies` (mirrored in `devDependencies` for development), so installing the plugin can no longer nest copies that shadow the host's own; the unused `dsh-attachment` entry was dropped. The release check now rejects host packages in `dependencies`.
 - The model-facing tool result no longer crashes text-only conversation models: the `image` ContentBlock is included only when the route declares image input (resolved per call from the session's request header through `llm.resolveModelInfo`), which previously aborted the whole turn with `UNSUPPORTED_CONTENT` on adapters such as pi-ai. The text summary now always names the saved attachment id, and the UI still renders the image from the presentation meta.
 
 ### Added

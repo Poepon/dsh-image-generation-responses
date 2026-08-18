@@ -150,6 +150,8 @@ Tests use mocked transport and tiny fixtures. They require no credentials and ma
 
 React, React DOM, and `@deepseek-ai/dsh-client-ui-attachment` are optional npm peers because the supported DSH web shell supplies them as platform seed modules. Materializing this Client half outside that shell is unsupported.
 
+The DSH host platform packages this plugin imports (`@deepseek-ai/dsh-tools`, `@deepseek-ai/dsh-credentials`, `@deepseek-ai/dsh-llm`) are non-optional npm peers — never runtime `dependencies`, so an install cannot nest a copy that shadows the host's own. They are mirrored in `devDependencies` so local development and CI can run the test suite.
+
 See [SECURITY.md](./SECURITY.md) for private vulnerability reporting, [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution guidelines, and [RELEASING.md](./RELEASING.md) for the maintainer release checklist.
 
 ## License
