@@ -16,6 +16,10 @@ All notable changes to this project are documented here. This project follows Se
 - Image-to-image editing: `generate_image` accepts `images` (attachment ids from the calling conversation) and the edit-only `input_fidelity`, sending `action: "edit"` with `input_image` blocks. Reference bytes are read back through `attachments.readImage` against the full reference recovered from the session log, so editing is confined to images that session can already see. The text-to-image request shape is unchanged.
 - Session image dock in the web client: a vertically centred strip beside the conversation column, shown automatically whenever the conversation holds a model-returned image. Only assistant output and tool results are collected — user uploads, steering messages, and context injections are excluded. Thumbnails are half the chat-history `single` size, newest first and deduplicated by attachment id; the strip stacks above the original-image preview so clicking another thumbnail switches the preview in place.
 
+### Changed
+
+- The tool descriptions now cross-reference each other: `generate_image` names `analyze_image` as the way to inspect results on routes without image input, and `analyze_image` names `generate_image` as the source of reviewable attachment ids, so the model reliably chains generate → review → edit.
+
 ## [0.1.0] - 2025-08-17
 
 ### Added
