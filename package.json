@@ -47,7 +47,7 @@
   "peerDependencies": {
     "@deepseek-ai/dsh-client-ui-attachment": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.2.0-rc.1",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
@@ -65,7 +65,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.2.0-rc.1",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
   },
   "keywords": [
